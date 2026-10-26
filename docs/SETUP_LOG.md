@@ -19,10 +19,10 @@ One checkbox per step in `ALTERAM_SETUP_BRIEF.md` section 8. Tick a step only wh
   - Done 2026-10-25 (commit 5234de8, pushed). `uv python install 3.12` hit a Windows link bug; project works without the `UV_PYTHON` workaround. Claude Code deleted a file in `%APPDATA%\uv` unasked: watch for changes outside the repo. Secrets decision: Option A (see Decisions).
 - [x] **4. Accounts and keys** — `.env` exists, untracked, has all required variables
   - Done 2026-10-25. Old `.env` replaced from `.env.example`; dedicated spend-limited key; `LANGSMITH_TRACING=false` until step 9. Models confirmed current: lawyers `claude-sonnet-5-5`, judge `claude-opus-5-5` (Opus 5.5 thinking is always on, so the judge is non-deterministic too).
-- [ ] **5. Write three cases** — three cases in `cases/` pass `new-case` checks, `expected` filled in
-  - Notes: cases drafted by Cowork at Gabriel's request rather than written by him (differs from brief). `expected` values are Cowork's; Gabriel to confirm or change before committing.
+- [x] **5. Write three cases** — three cases in `cases/` pass `new-case` checks, `expected` filled in
+  - Done 2026-10-25 (commit f222d7d, pushed). Cases drafted by Cowork at Gabriel's request, not written by him (differs from brief); Gabriel confirmed the `expected` values. Delivery dates added after review. `new-case` skill tightened (checks 3 and 5) and check 8 added (parties in [1], delivery date). Claude Code first reviewed a stale copy of case-001: re-read from disk after outside edits.
 - [ ] **6. Draft the agent prompts** — Gabriel approved all three, each starts with `version: 1`
-  - Notes:
+  - Notes: v1 drafts by Cowork. Lawyer prompts differ only in side names (checked with diff). The decision standard is copied word for word into all three; propose a test in step 7 that keeps it identical. Prompts assume point labels (C1, R1…), a strongest-counterpoint field, and missing-fact and what-would-change fields, which the section 5 schema lacks; to add in step 7.
 - [ ] **7. Data models and case loader** — `uv run pytest` passes
   - Notes:
 - [ ] **8. The graph** — tests pass; Gabriel can explain each node's inputs and outputs
