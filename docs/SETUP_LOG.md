@@ -23,8 +23,8 @@ One checkbox per step in `ALTERAM_SETUP_BRIEF.md` section 8. Tick a step only wh
   - Done 2026-10-25 (commit f222d7d, pushed). Cases drafted by Cowork at Gabriel's request, not written by him (differs from brief); Gabriel confirmed the `expected` values. Delivery dates added after review. `new-case` skill edits agreed (checks 3 and 5 tightened, check 8 added for parties in [1] and delivery date); Gabriel applies them through Claude Code, because Cowork can't write to `.claude/`. Claude Code first reviewed a stale copy of case-001: re-read from disk after outside edits.
 - [x] **6. Draft the agent prompts** — Gabriel approved all three, each starts with `version: 1`
   - Done 2026-10-26, pushed. Gabriel approved Cowork's v1 drafts unchanged (brief asked for a rewrite in his own words). From here, his judgement enters through `prompt-change` decisions after step 9. `new-case` skill edits applied. Git warned LF→CRLF on Windows; `.gitattributes` added in step 7 so prompt hashes match across machines. v1 drafts by Cowork. Lawyer prompts differ only in side names (checked with diff). The decision standard is copied word for word into all three; propose a test in step 7 that keeps it identical. Prompts assume point labels (C1, R1…), a strongest-counterpoint field, and missing-fact and what-would-change fields, which the section 5 schema lacks; to add in step 7.
-- [ ] **7. Data models and case loader** — `uv run pytest` passes
-  - Notes:
+- [x] **7. Data models and case loader** — `uv run pytest` passes
+  - Done 2026-10-26 (commits 8224efa, 93a6579): 43 tests pass, ruff clean; Cowork re-ran both on Linux too. Added beyond the original brief: point labels and side set by code, label checks, unsupported-claim label check, case hash, judge order, LF line endings via `.gitattributes`. Four commits were left unpushed while Gabriel was away.
 - [ ] **8. The graph** — tests pass; Gabriel can explain each node's inputs and outputs
   - Notes:
 - [ ] **9. Command line and run logs** — all three cases run, review notes written below
