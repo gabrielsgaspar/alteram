@@ -2,7 +2,7 @@
 
 from collections import Counter
 
-from alteram.models import Argument, Case, Verdict
+from alteram.models import Argument, Case, Side, Verdict
 
 
 class CitationError(ValueError):
@@ -11,6 +11,15 @@ class CitationError(ValueError):
 
 class CoverageError(ValueError):
     pass
+
+
+class LabelError(ValueError):
+    pass
+
+
+def set_side(argument: Argument, side: Side) -> Argument:
+    """Set side from the lawyer that produced it. Run before assign_labels."""
+    return argument.model_copy(update={"side": side})
 
 
 def assign_labels(argument: Argument) -> Argument:
@@ -23,6 +32,12 @@ def assign_labels(argument: Argument) -> Argument:
     return argument.model_copy(update={"points": points})
 
 
+def _require_labels(*arguments: Argument) -> None:
+    for argument in arguments:
+        if any(not p.label for p in argument.points):
+            raise LabelError(f"{argument.side} argument has unlabelled points")
+
+
 def _check(label: str, citations: list[int], case: Case) -> None:
     for n in citations:
         if n not in case.paragraphs:
@@ -32,6 +47,7 @@ def _check(label: str, citations: list[int], case: Case) -> None:
 
 
 def check_argument_citations(argument: Argument, case: Case) -> None:
+    _require_labels(argument)
     for point in argument.points:
         _check(point.label, point.citations, case)
     against = argument.strongest_point_against
@@ -47,6 +63,7 @@ def check_reason_coverage(
     verdict: Verdict, claimant: Argument, respondent: Argument
 ) -> None:
     """The verdict must give exactly one reason for every point label."""
+    _require_labels(claimant, respondent)
     expected = {p.label for p in claimant.points + respondent.points}
     counts = Counter(r.label for r in verdict.reasons)
     missing = sorted(expected - counts.keys())
@@ -57,3 +74,14 @@ def check_reason_coverage(
             f"verdict reasons: missing {missing}, unknown {unknown}, "
             f"duplicated {duplicated}"
         )
+
+
+def check_unsupported_labels(
+    verdict: Verdict, claimant: Argument, respondent: Argument
+) -> None:
+    """Every label in unsupported_claims must be a real point label."""
+    _require_labels(claimant, respondent)
+    real = {p.label for p in claimant.points + respondent.points}
+    unknown = sorted({u.label for u in verdict.unsupported_claims} - real)
+    if unknown:
+        raise LabelError(f"unsupported_claims has unknown labels {unknown}")

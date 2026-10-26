@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 Side = Literal["claimant", "respondent"]
 Winner = Literal["claimant", "respondent", "undecidable"]
 Kind = Literal["one-sided", "balanced", "missing-fact"]
+JudgeOrder = Literal["claimant_first", "respondent_first"]
 
 
 class Case(BaseModel):
@@ -16,6 +17,7 @@ class Case(BaseModel):
     kind: Kind  # evaluation only; never shown to an agent
     expected: Winner  # evaluation only; never shown to an agent
     paragraphs: dict[int, str]
+    sha256: str  # hash of the whole file, LF line endings
 
     @model_validator(mode="after")
     def _numbered_from_one(self) -> Self:
@@ -98,6 +100,8 @@ class AgentCall(BaseModel):
 
 class Run(BaseModel):
     case_id: str
+    case_sha256: str
+    judge_order: JudgeOrder
     started_at: datetime
     finished_at: datetime
     claimant: Argument

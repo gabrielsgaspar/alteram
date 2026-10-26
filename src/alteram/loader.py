@@ -19,8 +19,18 @@ class CaseFormatError(ValueError):
     pass
 
 
+def _read_lf(path: Path) -> str:
+    text = path.read_bytes().decode("utf-8")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def load_case(path: Path) -> Case:
-    lines = path.read_text(encoding="utf-8").splitlines()
+    text = _read_lf(path)
+    lines = text.splitlines()
     if not lines or lines[0] != "---" or "---" not in lines[1:]:
         raise CaseFormatError(f"{path.name}: missing --- frontmatter block")
     end = lines.index("---", 1)
@@ -48,14 +58,15 @@ def load_case(path: Path) -> Case:
         paragraphs[n] = match[2]
 
     try:
-        return Case(**{f: meta[f] for f in _FIELDS}, paragraphs=paragraphs)
+        return Case(
+            **{f: meta[f] for f in _FIELDS}, paragraphs=paragraphs, sha256=_sha256(text)
+        )
     except ValidationError as e:
         raise CaseFormatError(f"{path.name}: {e}") from e
 
 
 def load_prompt(name: str, prompts_dir: Path = PROMPTS_DIR) -> Prompt:
-    raw = (prompts_dir / f"{name}.md").read_bytes().decode("utf-8")
-    text = raw.replace("\r\n", "\n").replace("\r", "\n")
+    text = _read_lf(prompts_dir / f"{name}.md")
     first, _, rest = text.partition("\n")
     match = _VERSION.match(first)
     if not match:
@@ -64,5 +75,5 @@ def load_prompt(name: str, prompts_dir: Path = PROMPTS_DIR) -> Prompt:
         name=name,
         version=int(match[1]),
         text=rest.lstrip("\n"),
-        sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        sha256=_sha256(text),
     )

@@ -11,6 +11,7 @@ def case() -> Case:
         kind="balanced",
         expected="claimant",
         paragraphs={1: "One.", 2: "Two.", 3: "Three."},
+        sha256="0" * 64,
     )
 
 
