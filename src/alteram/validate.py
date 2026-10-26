@@ -17,6 +17,13 @@ class LabelError(ValueError):
     pass
 
 
+# Labels for the parts of an argument that are not numbered points. The judge
+# may flag these as unsupported, but they get no reason of their own.
+PART_LABELS = tuple(
+    f"{side}-{part}" for side in ("C", "R") for part in ("outcome", "against")
+)
+
+
 def set_side(argument: Argument, side: Side) -> Argument:
     """Set side from the lawyer that produced it. Run before assign_labels."""
     return argument.model_copy(update={"side": side})
@@ -79,9 +86,13 @@ def check_reason_coverage(
 def check_unsupported_labels(
     verdict: Verdict, claimant: Argument, respondent: Argument
 ) -> None:
-    """Every label in unsupported_claims must be a real point label."""
+    """Every label in unsupported_claims must be a point label or a part label."""
     _require_labels(claimant, respondent)
-    real = {p.label for p in claimant.points + respondent.points}
-    unknown = sorted({u.label for u in verdict.unsupported_claims} - real)
+    allowed = {p.label for p in claimant.points + respondent.points}
+    allowed |= set(PART_LABELS)
+    unknown = sorted({u.label for u in verdict.unsupported_claims} - allowed)
     if unknown:
-        raise LabelError(f"unsupported_claims has unknown labels {unknown}")
+        raise LabelError(
+            f"unsupported_claims has unknown labels {unknown}; use a point label "
+            f"or one of {', '.join(PART_LABELS)}"
+        )

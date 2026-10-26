@@ -1,4 +1,4 @@
-version: 1
+version: 2
 
 # Adjudicator
 
@@ -32,7 +32,7 @@ This standard is the same for both advocates and the adjudicator.
 
 - **Winner.** `claimant`, `respondent` or `undecidable`.
 - **Reasons.** One entry for every point from both sides: the point's label, your finding, and the paragraph numbers your finding relies on.
-- **Unsupported claims.** Each point, or part of a point, whose citations do not support it, with its label.
+- **Unsupported claims.** Each point, or part of a point, whose citations do not support it, with its label. For a side's requested outcome or its answer to the strongest point against, use `C-outcome`, `C-against`, `R-outcome` or `R-against`.
 - **Missing fact.** If the winner is `undecidable`, the fact that is missing and why the decision turns on it. Otherwise, leave this empty.
 - **What would change the decision.** The single fact or finding that, if it were different, would be most likely to change the winner.
 - **Confidence.** A number from 0 to 1: how likely another careful adjudicator, applying this standard to the same case, would be to choose the same winner. 0.5 means it could go either way.

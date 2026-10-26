@@ -109,7 +109,9 @@ def test_coverage_refuses_unlabelled(sides: tuple[Argument, Argument]) -> None:
         check_reason_coverage(verdict(("C1", [1])), sides[0], unlabelled("respondent"))
 
 
-@pytest.mark.parametrize("labels", [[], ["C2"], ["C1", "R1"]])
+@pytest.mark.parametrize(
+    "labels", [[], ["C2"], ["C1", "R1"], ["C-outcome", "R-against", "R1"]]
+)
 def test_unsupported_labels_pass(
     sides: tuple[Argument, Argument], labels: list[str]
 ) -> None:
@@ -124,3 +126,13 @@ def test_unsupported_label_unknown(sides: tuple[Argument, Argument]) -> None:
 def test_unsupported_refuses_unlabelled(sides: tuple[Argument, Argument]) -> None:
     with pytest.raises(LabelError, match="unlabelled"):
         check_unsupported_labels(verdict(), unlabelled("claimant"), sides[1])
+
+
+@pytest.mark.parametrize(
+    "label", ["C (requested outcome)", "C1/requested outcome", "X-outcome"]
+)
+def test_unsupported_unknown_part_label_names_the_allowed_ones(
+    sides: tuple[Argument, Argument], label: str
+) -> None:
+    with pytest.raises(LabelError, match="C-outcome, C-against, R-outcome, R-against"):
+        check_unsupported_labels(verdict(unsupported=[label]), *sides)

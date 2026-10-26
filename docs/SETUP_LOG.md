@@ -27,8 +27,8 @@ One checkbox per step in `ALTERAM_SETUP_BRIEF.md` section 8. Tick a step only wh
   - Done 2026-10-26 (commits 8224efa, 93a6579): 43 tests pass, ruff clean; Cowork re-ran both on Linux too. Added beyond the original brief: point labels and side set by code, label checks, unsupported-claim label check, case hash, judge order, LF line endings via `.gitattributes`. Four commits were left unpushed while Gabriel was away.
 - [x] **8. The graph** — tests pass; Gabriel can explain each node's inputs and outputs
   - Done 2026-10-26 (commit 3b9cbc7, pushed). Cowork wrote the node-by-node explanation with line references; Gabriel confirmed he can explain it. Details: 55 tests pass, ruff clean (re-run on Linux by Cowork). Phase 1 findings checked against the Anthropic docs: thinking can't be disabled; `display: "summarized"` is needed and returns only a summary; forced `tool_choice` is a 400, so structured outputs via `output_config.format`, no conversion call. Effort `high` for all agents, `max_tokens` 32000; refusal and max_tokens stops are hard failures; parse and check failures retried once. Carried to step 9: declare `anthropic` in pyproject (imported directly, currently only transitive); log the rejected attempt's error; judge-only entry point so swap reuses the same arguments; save failed runs.
-- [ ] **9. Command line and run logs** — all three cases run, review notes written below
-  - Notes:
+- [x] **9. Command line and run logs** — all three cases run, review notes written below
+  - Done 2026-10-26. CLI built ("Add CLI with run logs and order-swap check", tracing forced off in tests); `anthropic` declared in pyproject. One `run` per case plus `swap --repeats 5` on all three. Total cost about $3 from logged tokens. One-sided case won, no order flips, so no prompt change is required by the brief; one judge label defect to fix (see review notes).
 - [ ] **10. Continuous integration** — CI green on GitHub
   - Notes:
 - [ ] **11. README** — README on GitHub
@@ -41,11 +41,33 @@ One checkbox per step in `ALTERAM_SETUP_BRIEF.md` section 8. Tick a step only wh
 - **2026-10-25, `.env` protection: Option A.** On native Windows the Claude Code sandbox is unavailable, and `Read` deny rules don't cover scripts that open files themselves or commands like `grep -r`. Accepted: keep the deny rules and the `AGENTS.md` rule, and use a dedicated, spend-limited Anthropic key that's revoked if it ever appears in output. Revisit (WSL2 + sandbox `denyRead`) before handling any real party data.
 - **2026-10-25, decision standard: Financial Ombudsman style.** The judge decides what is fair and reasonable, taking relevant law into account, with facts found on the balance of probabilities. The law stated in the prompts is a short Consumer Rights Act 2015 summary: satisfactory quality (judged by age, mileage and price); a fault appearing within 6 months of delivery is presumed present at delivery unless the business shows otherwise, after that the consumer must show it; 30-day short-term right to reject; then one repair or replacement before rejection or price reduction. Draft summary, not legal advice; check against the Act before step 6.
 - **2026-10-25, meaning of `undecidable`:** a fact the decision turns on is missing, and a fair adjudicator would ask for it before deciding. Missing facts otherwise fall on whoever has to prove them.
+- **2026-10-26, Cowork wrote code at Gabriel's request.** This overrides the standing rule that Claude Code writes all code, for one change only: the judge label fix in `validate.py` and its tests. Tested in the cloud workspace (71 tests, ruff clean) before it was written to the repo.
+- **2026-10-26, case-004 added.** A fourth case where the respondent should clearly win, because with three claimant-or-undecidable cases a judge that favours claimants can't be detected. Drafted by Cowork; `expected: respondent` set by Cowork at Gabriel's request. Committed before any run.
 - **2026-10-25, respondent convention:** paragraph [1] of every case names the claimant and the respondent. Under conditional sale, the respondent is the finance company.
 
 ## Step 9 review notes
 
 _Cases where the judge disagreed with `expected`, flipped on swap, or let an unsupported claim through._
+
+**First real runs, 2026-10-26** (prompts v1, `claimant_first`, one run each; swaps not yet run):
+
+- **case-001** (`runs/case-001/20261026T205844Z.json`): claimant, confidence 0.92, matches `expected`. All agents took one attempt and stopped normally. Judge correctly rejected R3's repair-first argument (no repair-first rule within 30 days) and flagged C4's "failure to repair within a reasonable time" as unsupported. Claimant lawyer returned no thinking (adaptive skip). Minor: R1 cites [2], which doesn't support its point, and the judge didn't flag it.
+- **case-002** (`runs/case-002/20261026T210410Z.json`): claimant, confidence 0.72, matches `expected` (Cowork's narrow call). Judge caught C5's unsupported "has not offered a repair". To watch: (1) possible asymmetry, since the judge flagged R2's "high-mileage" as unsupported even though [4] and [8] show 19,600 miles in 7 months, while accepting the claimant's inferences; (2) the judge added its own technical theory ("a progressive problem caused by restricted oil flow") to reject R4, which isn't in the case or either argument; (3) neither lawyer, nor the judge, noted that Fenwick Motors both diagnosed the fault and quoted for the repair; (4) the case may lean further to the claimant than its `balanced` label suggests, because [13] (inspector silent on the pipe) is strong. Not changing the case after seeing results; the swap runs will show whether 0.72 is stable.
+- **Cost:** about $0.10–0.12 per run from logged tokens, about a third of Cowork's estimate. Confirm in the Console.
+
+**Swap checks, 2026-10-26** (prompts v1, `--repeats 5`, the same two arguments for all 10 judge calls per case):
+
+| Case | `expected` | Winners (claimant_first / respondent_first) | Mean confidence | Within / across disagreement |
+| --- | --- | --- | --- | --- |
+| 001 | claimant | 5 claimant / 5 claimant | 0.91 / 0.92 | 0.0 / 0.0 |
+| 002 | claimant | 5 claimant / 5 claimant | 0.72 / 0.72 | 0.0 / 0.0 |
+| 003 | undecidable | 5 claimant / 3 claimant, 2 undecidable | 0.60 / 0.55 | 0.3 / 0.4 |
+
+- **No order effect.** Cases 001 and 002 never moved. In case 003, across-order disagreement (0.4) is barely above within-order (0.3); the two `undecidable` verdicts both came in respondent_first, but 5/5 vs 3/5 is well within chance (Fisher p ≈ 0.44).
+- **Case 003 misses `expected` in 8 of 10, but the judge found the crux in 10 of 10.** Every verdict named the job card as the fact that would change the outcome. The claimant wins rest on two drafting choices in the case (Cowork's): [9] is a non-denial ("the first report it knows of"), and the job card sits with the dealer, the respondent's side, so an adverse inference against the respondent is reasonable. Confidence of 0.45–0.62 shows the judge treated it as close. Verdict: a case design weakness more than a judge failure. `expected` stays as pre-registered; a better missing-fact case goes in a new file, not an edit of 003.
+- **Defect: judge labels.** In case 001, 4 of 10 judge calls needed a retry because the judge tried to flag the requested outcome as unsupported, using labels like "C (requested outcome)" that don't exist. Requested outcomes and strongest-point-against answers have no labels. Fix in code and in the judge prompt (v2) through `prompt-change`.
+- **Possible asymmetry, untestable with these cases.** Respondent points were flagged unsupported far more often than claimant points (case 002: 33 vs 0 across 10 verdicts). But the claimant should win all three cases, so the losing side's stretching and a pro-claimant judge look the same. A case where the respondent should clearly win is needed to tell them apart.
+- **What the swap measures.** With fixed arguments the judge is very stable (case 002: 0.72 on all 10). Run-to-run variation therefore comes mostly from the lawyers, which the swap check doesn't vary.
 
 ## Retrospective
 
