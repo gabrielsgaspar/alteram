@@ -3,6 +3,12 @@ import pytest
 from alteram.models import Argument, Case, CounterPoint, Point
 
 
+@pytest.fixture(autouse=True)
+def no_tracing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may send LangSmith traces, whatever the shell has set."""
+    monkeypatch.setenv("LANGSMITH_TRACING", "false")
+
+
 @pytest.fixture
 def case() -> Case:
     return Case(
