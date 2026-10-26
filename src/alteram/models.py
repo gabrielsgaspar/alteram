@@ -93,9 +93,13 @@ class AgentCall(BaseModel):
     model_reported: str
     prompt_version: int
     prompt_sha256: str
+    effort: str
+    max_tokens: int
+    stop_reason: str
+    attempts: int  # 2 if the first answer failed a check and was retried
     thinking: str = ""  # logged only; never passed to another agent
-    input_tokens: int
-    output_tokens: int
+    input_tokens: int  # summed over attempts
+    output_tokens: int  # summed over attempts
 
 
 class Run(BaseModel):

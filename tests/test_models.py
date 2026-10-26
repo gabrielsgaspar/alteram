@@ -51,6 +51,10 @@ def run(judge_order: str) -> Run:
         model_reported="m",
         prompt_version=1,
         prompt_sha256="0" * 64,
+        effort="high",
+        max_tokens=32000,
+        stop_reason="end_turn",
+        attempts=1,
         input_tokens=1,
         output_tokens=1,
     )
