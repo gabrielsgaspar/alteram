@@ -81,11 +81,19 @@ The `[n]` markers are how agents cite facts. Agents never see the frontmatter.
 ### Data models (Pydantic)
 
 - **Case:** `id`, `title`, `paragraphs` (number → text). `kind` and `expected` are loaded for checks but never sent to an agent.
-- **Argument:** `side` (claimant | respondent), `points` (each: claim, reasoning, cited paragraph numbers, which must be non-empty), `requested_outcome`.
-- **Verdict:** `winner` (claimant | respondent | undecidable), `reasons` (each: the point it addresses, finding, cited paragraph numbers), `unsupported_claims` (points from either side whose citations don't support them), `confidence` (0 to 1).
-- **Run:** case id, both arguments, the verdict, lawyer thinking (logged only), model IDs, a hash of each prompt file, timestamps, token counts.
+- **Argument:** `side` (claimant | respondent), `points` (each: `label` such as C1 or R1, claim, reasoning, cited paragraph numbers, which must be non-empty), `strongest_point_against` (the point, the answer, cited paragraph numbers), `requested_outcome`.
+- **Verdict:** `winner` (claimant | respondent | undecidable), `reasons` (one per point from both sides: the point's label, finding, cited paragraph numbers), `unsupported_claims` (label and description of each point, or part of a point, whose citations don't support it), `missing_fact` (required if `undecidable`, otherwise empty), `what_would_change`, `confidence` (0 to 1).
+- **Run:** case id, both arguments, the verdict, lawyer and judge thinking (logged only), model IDs as configured and as reported by the API, the version and hash of each prompt file, timestamps, token counts.
 
-Code-level rule: a citation to a paragraph that does not exist is rejected before the judge sees it.
+Code-level rules (updated 2026-10-26 after steps 5 and 6):
+
+- A citation to a paragraph that does not exist is rejected before the judge sees it, and the run fails with an error naming the citation. Whether the graph retries the lawyer once is decided in step 8.
+- The judge's citations are checked the same way, and the verdict must have exactly one reason for every point label from both arguments.
+- Point labels (C1, C2… and R1, R2…) are assigned by code, not trusted from the model.
+- The "Decision standard" section is identical in all three prompt files; a test enforces this.
+- The `version: N` line is stripped before a prompt is sent to a model. Prompt hashes are computed on the whole file with line endings normalised to LF, so Windows and CI give the same hash.
+
+Decisions on the decision standard, the meaning of `undecidable` and case conventions are recorded in `docs/SETUP_LOG.md`.
 
 ### Graph (LangGraph)
 
