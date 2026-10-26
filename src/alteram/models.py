@@ -97,6 +97,7 @@ class AgentCall(BaseModel):
     max_tokens: int
     stop_reason: str
     attempts: int  # 2 if the first answer failed a check and was retried
+    retry_error: str = ""  # why the first attempt was rejected, if it was
     thinking: str = ""  # logged only; never passed to another agent
     input_tokens: int  # summed over attempts
     output_tokens: int  # summed over attempts
@@ -112,3 +113,44 @@ class Run(BaseModel):
     respondent: Argument
     verdict: Verdict
     calls: dict[str, AgentCall]  # keys: claimant, respondent, judge
+
+
+class JudgeResult(BaseModel):
+    judge_order: JudgeOrder
+    verdict: Verdict
+    call: AgentCall
+
+
+class SwapSummary(BaseModel):
+    winners: dict[JudgeOrder, list[Winner]]
+    mean_confidence: dict[JudgeOrder, float]
+    # Share of verdict pairs whose winners differ; None when there are no pairs.
+    within_order_disagreement: float | None  # noise: same order, same arguments
+    across_order_disagreement: float | None  # noise plus any order effect
+
+
+class SwapRun(BaseModel):
+    case_id: str
+    case_sha256: str
+    started_at: datetime
+    finished_at: datetime
+    claimant: Argument
+    respondent: Argument
+    calls: dict[str, AgentCall]  # keys: claimant, respondent
+    judges: list[JudgeResult]
+    summary: SwapSummary
+
+
+class FailedRun(BaseModel):
+    """Whatever completed before a run or swap failed, plus the error."""
+
+    command: Literal["run", "swap"]
+    case_id: str
+    case_sha256: str
+    started_at: datetime
+    finished_at: datetime
+    error: str
+    claimant: Argument | None = None
+    respondent: Argument | None = None
+    calls: dict[str, AgentCall] = Field(default_factory=dict)  # incl. a failed call
+    judges: list[JudgeResult] = Field(default_factory=list)  # swap only

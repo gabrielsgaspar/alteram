@@ -15,7 +15,7 @@ from alteram.graph import (
     MAX_TOKENS,
     RETRY_NOTE,
     THINKING,
-    AgentError,
+    RunFailed,
     anthropic_chat_model,
     run_case,
 )
@@ -158,6 +158,8 @@ def test_bad_citation_is_retried_once(case: Case) -> None:
     run = run_case(case, "claimant_first", factory(models))
     assert run.calls["claimant"].attempts == 2
     assert run.calls["claimant"].input_tokens == 20
+    assert "paragraph 99" in run.calls["claimant"].retry_error
+    assert run.calls["respondent"].retry_error == ""
     retry_text = human_text(models["claimant"], call=1)
     assert RETRY_NOTE in retry_text and "paragraph 99" in retry_text
 
@@ -165,7 +167,7 @@ def test_bad_citation_is_retried_once(case: Case) -> None:
 def test_bad_citation_twice_fails(case: Case) -> None:
     bad = reply(argument(citation=99))
     models = fakes(claimant=[bad, bad])
-    with pytest.raises(AgentError, match="claimant failed checks twice"):
+    with pytest.raises(RunFailed, match="claimant failed checks twice"):
         run_case(case, "claimant_first", factory(models))
     assert len(models["claimant"].seen) == 2
     assert models["judge"].seen == []
@@ -199,7 +201,7 @@ def test_judge_sees_arguments_in_judge_order(
 def test_refusal_fails_without_retry(case: Case) -> None:
     refused = reply(argument(), stop_reason="refusal", stop_details={"category": "bio"})
     models = fakes(claimant=[refused, reply(argument())])
-    with pytest.raises(AgentError, match=r"claimant refused \(category: bio\)"):
+    with pytest.raises(RunFailed, match=r"claimant refused \(category: bio\)"):
         run_case(case, "claimant_first", factory(models))
     assert len(models["claimant"].seen) == 1
 
@@ -207,7 +209,7 @@ def test_refusal_fails_without_retry(case: Case) -> None:
 def test_max_tokens_fails_without_retry(case: Case) -> None:
     cut = reply(argument(), stop_reason="max_tokens")
     models = fakes(judge=[cut, reply(VERDICT)])
-    with pytest.raises(AgentError, match="judge hit max_tokens"):
+    with pytest.raises(RunFailed, match="judge hit max_tokens"):
         run_case(case, "claimant_first", factory(models))
     assert len(models["judge"].seen) == 1
 
