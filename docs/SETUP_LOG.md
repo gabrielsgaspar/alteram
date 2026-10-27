@@ -44,6 +44,7 @@ One checkbox per step in `ALTERAM_SETUP_BRIEF.md` section 8. Tick a step only wh
 - **2026-10-26, Cowork wrote code at Gabriel's request.** This overrides the standing rule that Claude Code writes all code, for one change only: the judge label fix in `validate.py` and its tests. Tested in the cloud workspace (71 tests, ruff clean) before it was written to the repo.
 - **2026-10-26, case-004 added.** A fourth case where the respondent should clearly win, because with three claimant-or-undecidable cases a judge that favours claimants can't be detected. Drafted by Cowork; `expected: respondent` set by Cowork at Gabriel's request. Committed before any run.
 - **2026-10-25, respondent convention:** paragraph [1] of every case names the claimant and the respondent. Under conditional sale, the respondent is the finance company.
+- 2026-10-27: WSL2 (Ubuntu 26.04.1 LTS, WSL 3.0.3.0) and Docker Desktop (4.97.0) installed; development moves to WSL2
 
 ## Step 9 review notes
 
