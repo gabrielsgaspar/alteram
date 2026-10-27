@@ -12,10 +12,16 @@ Change:
 - Lawyer prompts unchanged, so the mirror rule is unaffected.
 - Made by Cowork at Gabriel's request, not by Claude Code.
 
-Results (v1 baseline from the swap runs of 2026-10-26; v2 pending):
-- case-001: v1 claimant 10/10, mean confidence 0.91 / 0.92, 4 judge retries. v2: pending.
-- case-002: v1 claimant 10/10, 0.72 / 0.72, 0 retries. v2: pending.
-- case-003: v1 claimant 8/10, undecidable 2/10, 0.60 / 0.55, 0 retries. v2: pending.
-- case-004: new case, no v1 baseline. v2: pending.
+Results (`swap --repeats 5`; v1 runs 2026-10-26 21:10–21:22, v2 runs 22:04–22:13; mean confidence given as claimant_first / respondent_first):
+- case-001: v1 claimant 10/10, 0.91 / 0.92, 4 judge retries → v2 claimant 10/10, 0.86 / 0.86, 5 judge retries.
+- case-002: v1 claimant 10/10, 0.72 / 0.72, 0 retries → v2 claimant 10/10, 0.74 / 0.74, 10 retries.
+- case-003: v1 claimant 8/10, undecidable 2/10 → v2 undecidable 8/10, claimant 2/10, 8 retries. Confounded: each swap re-runs the lawyers, and the v2 respondent argument had 1 point against 4 in v1. The shift can't be attributed to the prompt.
+- case-004 (new, v2 only): respondent 10/10, 0.90 / 0.90, 1 retry.
+- Retries: the old error ("C (requested outcome)") is gone, but a new one replaced it. The judge now also writes reasons for `C-against` and `R-against`, which `check_reason_coverage` rejects as unknown. 24 of 40 v2 judge calls retried, against 4 of 30 in v1. The v2 sentence caused this.
+- Order: no order effect in any case. In case 003 the minority verdicts came only in respondent_first in both versions (4/20 vs 0/20, Fisher p ≈ 0.11): watch, not act.
 
-Decision: pending (owner), after the v2 runs.
+Decision: keep v2 (recommended by Cowork; owner to confirm), with a code fix so reasons may also cover the four part labels, which are optional and never required. No v3 prompt needed.
+
+Code fix: part labels allowed as optional reasons (commit 58e5b0b)
+
+Method note: comparing judge prompts with `swap` re-runs the lawyers, so lawyer variation is mixed into the comparison. A clean comparison re-judges the same saved arguments under both judge versions (see `docs/IDEAS.md`).
