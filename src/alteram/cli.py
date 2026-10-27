@@ -29,6 +29,7 @@ from alteram.models import (
     SwapRun,
     Verdict,
 )
+from alteram.pricing import Budget, run_budget_from_env
 from alteram.rejudge import (
     CaseChanged,
     SourceError,
@@ -86,20 +87,39 @@ def format_verdict(verdict: Verdict) -> str:
     return "\n".join(lines)
 
 
-def call_row(role: str, calls: list[AgentCall]) -> tuple[str, int, int, int]:
+CallRow = tuple[str, int, int, int, float]
+
+
+def call_row(role: str, calls: list[AgentCall]) -> CallRow:
     return (
         role,
         sum(c.attempts for c in calls),
         sum(c.input_tokens for c in calls),
         sum(c.output_tokens for c in calls),
+        sum(c.cost_usd or 0.0 for c in calls),  # None only in old files
     )
 
 
-def format_calls(rows: list[tuple[str, int, int, int]]) -> str:
-    lines = ["== Calls ==", f"  {'agent':<12}{'attempts':>9}{'in':>10}{'out':>10}"]
-    for role, attempts, tokens_in, tokens_out in rows:
-        lines.append(f"  {role:<12}{attempts:>9}{tokens_in:>10}{tokens_out:>10}")
+def format_calls(rows: list[CallRow]) -> str:
+    lines = [
+        "== Calls ==",
+        f"  {'agent':<12}{'attempts':>9}{'in':>10}{'out':>10}{'USD':>10}",
+    ]
+    for role, attempts, tokens_in, tokens_out, cost in rows:
+        lines.append(
+            f"  {role:<12}{attempts:>9}{tokens_in:>10}{tokens_out:>10}{cost:>10.4f}"
+        )
+    total = sum(row[4] for row in rows)
+    lines.append(f"  {'total':<12}{'':>29}{total:>10.4f}")
     return "\n".join(lines)
+
+
+def report_failure(e: RunFailed, path: Path) -> None:
+    print(
+        f"Run failed: {e}\nSpent before failing: ${e.failed.cost_usd:.4f}"
+        f"\nPartial log saved to {path}",
+        file=sys.stderr,
+    )
 
 
 def format_share(share: float | None) -> str:
@@ -195,6 +215,7 @@ def rejudge_command(
     runs_dir: Path,
     cases_dir: Path,
     stamp: str,
+    budget: Budget,
 ) -> int:
     try:
         source = load_source(args.source)
@@ -208,10 +229,10 @@ def rejudge_command(
         print(f"Refused: {e}", file=sys.stderr)
         return 2
     try:
-        rejudge = run_rejudge(case, source, args.repeats, chat_model)
+        rejudge = run_rejudge(case, source, args.repeats, chat_model, budget)
     except RunFailed as e:
         path = save(e.failed, runs_dir, case.id, f"{stamp}-failed")
-        print(f"Run failed: {e}\nPartial log saved to {path}", file=sys.stderr)
+        report_failure(e, path)
         return 1
     print(format_rejudge(rejudge))
     path = save(rejudge, runs_dir, case.id, f"{stamp}-rejudge")
@@ -234,22 +255,27 @@ def main(
             file=sys.stderr,
         )
         return 2
+    try:
+        budget = Budget(run_budget_from_env())
+    except ValueError as e:
+        print(f"{e} (see .env.example).", file=sys.stderr)
+        return 2
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")  # no ':' for Windows
     if args.command == "rejudge":
-        return rejudge_command(args, chat_model, runs_dir, cases_dir, stamp)
+        return rejudge_command(args, chat_model, runs_dir, cases_dir, stamp, budget)
     case = load_case(args.case)
     try:
         if args.command == "run":
-            run = run_case(case, args.order, chat_model)
+            run = run_case(case, args.order, chat_model, budget)
             print_run(run)
             path = save(run, runs_dir, case.id, stamp)
         else:
-            swap = run_swap(case, args.repeats, chat_model)
+            swap = run_swap(case, args.repeats, chat_model, budget)
             print(format_swap(swap))
             path = save(swap, runs_dir, case.id, f"{stamp}-swap")
     except RunFailed as e:
         path = save(e.failed, runs_dir, case.id, f"{stamp}-failed")
-        print(f"Run failed: {e}\nPartial log saved to {path}", file=sys.stderr)
+        report_failure(e, path)
         return 1
     print(f"\nSaved to {path}")
     return 0

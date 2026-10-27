@@ -24,6 +24,7 @@ from alteram.models import (
     SwapSummary,
     Winner,
 )
+from alteram.pricing import DEFAULT_RUN_BUDGET_USD, Budget
 
 ORDERS: tuple[JudgeOrder, ...] = get_args(JudgeOrder)
 
@@ -59,16 +60,20 @@ def summarize(judges: list[JudgeResult]) -> SwapSummary:
 
 
 def run_swap(
-    case: Case, repeats: int, chat_model: ChatModelFactory = anthropic_chat_model
+    case: Case,
+    repeats: int,
+    chat_model: ChatModelFactory = anthropic_chat_model,
+    budget: Budget | None = None,
 ) -> SwapRun:
     """Lawyers once, then the judge `repeats` times in each order."""
+    budget = budget or Budget(DEFAULT_RUN_BUDGET_USD)
     started_at = datetime.now(UTC)
     arguments: dict[str, Argument] = {}
     calls: dict[str, AgentCall] = {}
     judges: list[JudgeResult] = []
     try:
         for side in ("claimant", "respondent"):
-            arguments[side], calls[side] = run_lawyer(case, side, chat_model)
+            arguments[side], calls[side] = run_lawyer(case, side, chat_model, budget)
         # Orders interleaved, so drift over time doesn't look like an order effect.
         for _ in range(repeats):
             for order in ORDERS:
@@ -78,12 +83,13 @@ def run_swap(
                     arguments["respondent"],
                     order,
                     chat_model,
+                    budget,
                 )
                 judges.append(
                     JudgeResult(judge_order=order, verdict=verdict, call=call)
                 )
     except Exception as e:
-        if isinstance(e, AgentError):
+        if isinstance(e, AgentError) and e.call:
             calls[e.role] = e.call
         raise RunFailed(
             FailedRun(
@@ -93,6 +99,7 @@ def run_swap(
                 started_at=started_at,
                 finished_at=datetime.now(UTC),
                 error=f"{type(e).__name__}: {e}",
+                cost_usd=budget.spent_usd,
                 claimant=arguments.get("claimant"),
                 respondent=arguments.get("respondent"),
                 calls=calls,

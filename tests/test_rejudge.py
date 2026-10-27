@@ -7,7 +7,16 @@ from pathlib import Path
 
 import pytest
 from test_cli import CASE_001, FAKE_KEY, judged, saved
-from test_graph import VERDICT, RecordingFake, factory, fakes, human_text, reply
+from test_graph import (
+    JUDGE_MODEL,
+    LAWYER_MODEL,
+    VERDICT,
+    RecordingFake,
+    factory,
+    fakes,
+    human_text,
+    reply,
+)
 
 from alteram import cli
 from alteram.graph import JUDGE_MODEL_ENV, LAWYER_MODEL_ENV
@@ -22,8 +31,8 @@ CASES_DIR = CASE_001.parent
 def env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "load_dotenv", lambda: None)
     monkeypatch.setenv("ANTHROPIC_API_KEY", FAKE_KEY)
-    monkeypatch.setenv(LAWYER_MODEL_ENV, "fake-lawyer")
-    monkeypatch.setenv(JUDGE_MODEL_ENV, "fake-judge")
+    monkeypatch.setenv(LAWYER_MODEL_ENV, LAWYER_MODEL)
+    monkeypatch.setenv(JUDGE_MODEL_ENV, JUDGE_MODEL)
 
 
 def judge_only(judge: RecordingFake):

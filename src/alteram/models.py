@@ -101,6 +101,9 @@ class AgentCall(BaseModel):
     thinking: str = ""  # logged only; never passed to another agent
     input_tokens: int  # summed over attempts
     output_tokens: int  # summed over attempts
+    # Summed over attempts, priced from model_reported (see pricing.py).
+    # None only in files written before costs were logged.
+    cost_usd: float | None = None
 
 
 class Run(BaseModel):
@@ -150,6 +153,7 @@ class FailedRun(BaseModel):
     started_at: datetime
     finished_at: datetime
     error: str
+    cost_usd: float = 0  # everything spent before the failure, from the budget
     claimant: Argument | None = None
     respondent: Argument | None = None
     calls: dict[str, AgentCall] = Field(default_factory=dict)  # incl. a failed call

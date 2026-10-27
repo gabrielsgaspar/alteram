@@ -24,6 +24,13 @@ from alteram.models import (
     Side,
     Verdict,
 )
+from alteram.pricing import (
+    DEFAULT_RUN_BUDGET_USD,
+    Budget,
+    BudgetExceeded,
+    cost_usd,
+    worst_case_usd,
+)
 from alteram.validate import (
     CitationError,
     CoverageError,
@@ -58,10 +65,11 @@ ChatModelFactory = Callable[[str, str, str, type[BaseModel]], BaseChatModel]
 
 
 class AgentError(RuntimeError):
-    def __init__(self, message: str, role: str, call: AgentCall) -> None:
+    def __init__(self, message: str, role: str, call: AgentCall | None) -> None:
         super().__init__(message)
         self.role = role
-        self.call = call  # what the failed agent cost, for the failed-run log
+        # What the failed agent cost, for the failed-run log; None if never called.
+        self.call = call
 
 
 class RunFailed(RuntimeError):
@@ -125,6 +133,7 @@ def _call_agent[T: BaseModel](
     text: str,
     check: Callable[[T], T],
     chat_model: ChatModelFactory,
+    budget: Budget,
 ) -> tuple[T, AgentCall]:
     """Call one agent, parse and check its answer, and retry once on a failed check."""
     prompt = load_prompt(role)
@@ -132,15 +141,34 @@ def _call_agent[T: BaseModel](
     model = chat_model(role, model_id, effort, schema)
     user_text = text
     input_tokens = output_tokens = 0
+    cost = 0.0
     retry_error = ""
+    call: AgentCall | None = None
     for attempt in (1, 2):
-        reply = model.invoke([SystemMessage(prompt.text), HumanMessage(user_text)])
+        chars = len(prompt.text) + len(user_text)
+        worst = worst_case_usd(model_id, chars, MAX_TOKENS)
+        try:
+            budget.reserve(worst)
+        except BudgetExceeded as e:
+            raise AgentError(f"{role} not called: {e}", role, call) from e
+        try:
+            reply = model.invoke([SystemMessage(prompt.text), HumanMessage(user_text)])
+        except Exception:
+            budget.settle(worst, 0.0)  # a request that failed is not billed
+            raise
         usage: Any = reply.usage_metadata or {}
+        model_reported = reply.response_metadata.get("model_name", "")
+        # An unknown model raises here, never costs $0; the run then fails.
+        attempt_cost = cost_usd(
+            model_reported, usage.get("input_tokens", 0), usage.get("output_tokens", 0)
+        )
+        budget.settle(worst, attempt_cost)
         input_tokens += usage.get("input_tokens", 0)
         output_tokens += usage.get("output_tokens", 0)
+        cost += attempt_cost
         call = AgentCall(
             model_configured=model_id,
-            model_reported=reply.response_metadata.get("model_name", ""),
+            model_reported=model_reported,
             prompt_version=prompt.version,
             prompt_sha256=prompt.sha256,
             effort=effort,
@@ -151,6 +179,7 @@ def _call_agent[T: BaseModel](
             thinking=_thinking(reply),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cost_usd=cost,
         )
         _require_complete(role, reply, call)
         try:
@@ -166,7 +195,7 @@ def _call_agent[T: BaseModel](
 
 
 def run_lawyer(
-    case: Case, side: Side, chat_model: ChatModelFactory = anthropic_chat_model
+    case: Case, side: Side, chat_model: ChatModelFactory, budget: Budget
 ) -> tuple[Argument, AgentCall]:
     def check(argument: Argument) -> Argument:
         argument = assign_labels(set_side(argument, side))
@@ -181,12 +210,15 @@ def run_lawyer(
         case.agent_text(),
         check,
         chat_model,
+        budget,
     )
 
 
-def _lawyer(side: Side, chat_model: ChatModelFactory) -> Callable[[State], dict]:
+def _lawyer(
+    side: Side, chat_model: ChatModelFactory, budget: Budget
+) -> Callable[[State], dict]:
     def node(state: State) -> dict:
-        argument, call = run_lawyer(state["case"], side, chat_model)
+        argument, call = run_lawyer(state["case"], side, chat_model, budget)
         return {side: argument, "calls": {side: call}}
 
     return node
@@ -212,7 +244,8 @@ def run_judge(
     claimant: Argument,
     respondent: Argument,
     judge_order: JudgeOrder,
-    chat_model: ChatModelFactory = anthropic_chat_model,
+    chat_model: ChatModelFactory,
+    budget: Budget,
 ) -> tuple[Verdict, AgentCall]:
     """The judge alone, on arguments already written; the swap check reuses it."""
 
@@ -224,11 +257,11 @@ def run_judge(
 
     text = judge_input(case, claimant, respondent, judge_order)
     return _call_agent(
-        "judge", JUDGE_MODEL_ENV, JUDGE_EFFORT, Verdict, text, check, chat_model
+        "judge", JUDGE_MODEL_ENV, JUDGE_EFFORT, Verdict, text, check, chat_model, budget
     )
 
 
-def _judge(chat_model: ChatModelFactory) -> Callable[[State], dict]:
+def _judge(chat_model: ChatModelFactory, budget: Budget) -> Callable[[State], dict]:
     def node(state: State) -> dict:
         verdict, call = run_judge(
             state["case"],
@@ -236,17 +269,18 @@ def _judge(chat_model: ChatModelFactory) -> Callable[[State], dict]:
             state["respondent"],
             state["judge_order"],
             chat_model,
+            budget,
         )
         return {"verdict": verdict, "calls": {"judge": call}}
 
     return node
 
 
-def build_graph(chat_model: ChatModelFactory = anthropic_chat_model):
+def build_graph(chat_model: ChatModelFactory, budget: Budget):
     graph = StateGraph(State)
-    graph.add_node("claimant", _lawyer("claimant", chat_model))
-    graph.add_node("respondent", _lawyer("respondent", chat_model))
-    graph.add_node("judge", _judge(chat_model))
+    graph.add_node("claimant", _lawyer("claimant", chat_model, budget))
+    graph.add_node("respondent", _lawyer("respondent", chat_model, budget))
+    graph.add_node("judge", _judge(chat_model, budget))
     graph.add_edge(START, "claimant")
     graph.add_edge(START, "respondent")
     graph.add_edge(["claimant", "respondent"], "judge")  # runs once, after both
@@ -258,19 +292,22 @@ def run_case(
     case: Case,
     judge_order: JudgeOrder,
     chat_model: ChatModelFactory = anthropic_chat_model,
+    budget: Budget | None = None,
 ) -> Run:
     """Run the graph on one case; on failure raise RunFailed with what completed."""
+    budget = budget or Budget(DEFAULT_RUN_BUDGET_USD)
     started_at = datetime.now(UTC)
     inputs: State = {"case": case, "judge_order": judge_order}
     result = inputs
     try:
         # "values" yields the whole state after each step, so a failure keeps
         # the arguments of a step that finished.
-        for state in build_graph(chat_model).stream(inputs, stream_mode="values"):
+        graph = build_graph(chat_model, budget)
+        for state in graph.stream(inputs, stream_mode="values"):
             result = state
     except Exception as e:
         calls = dict(result.get("calls", {}))
-        if isinstance(e, AgentError):
+        if isinstance(e, AgentError) and e.call:
             calls[e.role] = e.call
         raise RunFailed(
             FailedRun(
@@ -280,6 +317,7 @@ def run_case(
                 started_at=started_at,
                 finished_at=datetime.now(UTC),
                 error=f"{type(e).__name__}: {e}",
+                cost_usd=budget.spent_usd,
                 claimant=result.get("claimant"),
                 respondent=result.get("respondent"),
                 calls=calls,

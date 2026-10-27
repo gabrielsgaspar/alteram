@@ -52,6 +52,7 @@ docs/            setup log, ideas, prompt change log
 | `ANTHROPIC_API_KEY` | Claude API calls |
 | `ALTERAM_LAWYER_MODEL` | Model ID for both lawyers |
 | `ALTERAM_JUDGE_MODEL` | Model ID for the judge |
+| `ALTERAM_RUN_BUDGET_USD` | Spending limit per run, swap or rejudge in USD (empty: 5) |
 | `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` | Optional tracing |
 
 ### Agents and prompts

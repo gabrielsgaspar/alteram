@@ -23,6 +23,7 @@ from alteram.models import (
     Run,
     SwapRun,
 )
+from alteram.pricing import DEFAULT_RUN_BUDGET_USD, Budget
 from alteram.swap import ORDERS, disagreement
 
 
@@ -116,9 +117,14 @@ def stats(judges: list[JudgeResult]) -> RejudgeStats:
 
 
 def run_rejudge(
-    case: Case, source: Source, repeats: int, chat_model: ChatModelFactory
+    case: Case,
+    source: Source,
+    repeats: int,
+    chat_model: ChatModelFactory,
+    budget: Budget | None = None,
 ) -> RejudgeRun:
     """The judge alone, `repeats` times in each order; the lawyers are never called."""
+    budget = budget or Budget(DEFAULT_RUN_BUDGET_USD)
     started_at = datetime.now(UTC)
     prompt = load_prompt("judge")
     judges: list[JudgeResult] = []
@@ -128,13 +134,18 @@ def run_rejudge(
         for _ in range(repeats):
             for order in ORDERS:
                 verdict, call = run_judge(
-                    case, source.claimant, source.respondent, order, chat_model
+                    case,
+                    source.claimant,
+                    source.respondent,
+                    order,
+                    chat_model,
+                    budget,
                 )
                 judges.append(
                     JudgeResult(judge_order=order, verdict=verdict, call=call)
                 )
     except Exception as e:
-        if isinstance(e, AgentError):
+        if isinstance(e, AgentError) and e.call:
             calls[e.role] = e.call
         raise RunFailed(
             FailedRun(
@@ -144,6 +155,7 @@ def run_rejudge(
                 started_at=started_at,
                 finished_at=datetime.now(UTC),
                 error=f"{type(e).__name__}: {e}",
+                cost_usd=budget.spent_usd,
                 claimant=source.claimant,
                 respondent=source.respondent,
                 calls=calls,
