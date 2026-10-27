@@ -69,12 +69,15 @@ def check_verdict_citations(verdict: Verdict, case: Case) -> None:
 def check_reason_coverage(
     verdict: Verdict, claimant: Argument, respondent: Argument
 ) -> None:
-    """The verdict must give exactly one reason for every point label."""
+    """The verdict must give exactly one reason for every point label.
+
+    Reasons for part labels (C-outcome, C-against…) are optional extras.
+    """
     _require_labels(claimant, respondent)
     expected = {p.label for p in claimant.points + respondent.points}
     counts = Counter(r.label for r in verdict.reasons)
     missing = sorted(expected - counts.keys())
-    unknown = sorted(counts.keys() - expected)
+    unknown = sorted(counts.keys() - expected - set(PART_LABELS))
     duplicated = sorted(label for label, c in counts.items() if c > 1)
     if missing or unknown or duplicated:
         raise CoverageError(

@@ -72,12 +72,32 @@ def test_coverage_pass(sides: tuple[Argument, Argument]) -> None:
     check_reason_coverage(verdict(("C1", [1]), ("C2", [2]), ("R1", [3])), *sides)
 
 
+def test_coverage_allows_part_labels(sides: tuple[Argument, Argument]) -> None:
+    labels = ["C1", "C2", "R1", "C-against", "R-against"]
+    check_reason_coverage(verdict(*[(lab, [1]) for lab in labels]), *sides)
+
+
+def test_coverage_logged_part_label_failure_now_passes() -> None:
+    # Inputs from runs/case-001/20261026T220452Z-swap.json, which was rejected
+    # with "verdict reasons: missing [], unknown ['C-against', 'R-against']".
+    claimant = assign_labels(make_argument("claimant", [[1]] * 4))
+    respondent = assign_labels(make_argument("respondent", [[1]] * 3))
+    labels = ["C1", "C2", "C3", "C4", "R1", "R2", "R3", "C-against", "R-against"]
+    check_reason_coverage(
+        verdict(*[(lab, [1]) for lab in labels]), claimant, respondent
+    )
+
+
 @pytest.mark.parametrize(
     ("labels", "message"),
     [
         (["C1", "R1"], r"missing \['C2'\]"),
         (["C1", "C2", "R1", "R2"], r"unknown \['R2'\]"),
         (["C1", "C1", "C2", "R1"], r"duplicated \['C1'\]"),
+        (["C1", "C2", "R1", "R-against", "R-against"], r"duplicated \['R-against'\]"),
+        (["C1", "R1", "C-against"], r"missing \['C2'\]"),
+        (["C1", "C2", "R1", "C9"], r"unknown \['C9'\]"),
+        (["C1", "C2", "R1", "C (requested outcome)"], r"unknown \['C \(requested"),
     ],
 )
 def test_coverage_fails(
