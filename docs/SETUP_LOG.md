@@ -46,6 +46,7 @@ One checkbox per step in `ALTERAM_SETUP_BRIEF.md` section 8. Tick a step only wh
 - **2026-10-25, respondent convention:** paragraph [1] of every case names the claimant and the respondent. Under conditional sale, the respondent is the finance company.
 - 2026-10-27: WSL2 (Ubuntu 26.04.1 LTS, WSL 3.0.3.0) and Docker Desktop (4.97.0) installed; development moves to WSL2
 - 2026-10-27: workspace moved to WSL2 at ~/projects/alteram; Windows copy retired.
+- 2026-10-27: Bash sandbox enabled (WSL2, strict mode, `failIfUnavailable`) with OS-level `denyRead` on `.env` paths and `**/.env`; network limited to PyPI and GitHub, write added for `~/.cache/uv`. Verified with a canary file that cat/head/grep/python/uv-run reads fail, and uv sync/lock, ruff, pytest (107 passed), git and gh work sandboxed.
 
 ## Step 9 review notes
 
