@@ -144,7 +144,7 @@ class SwapRun(BaseModel):
 class FailedRun(BaseModel):
     """Whatever completed before a run or swap failed, plus the error."""
 
-    command: Literal["run", "swap"]
+    command: Literal["run", "swap", "rejudge"]
     case_id: str
     case_sha256: str
     started_at: datetime
@@ -153,4 +153,43 @@ class FailedRun(BaseModel):
     claimant: Argument | None = None
     respondent: Argument | None = None
     calls: dict[str, AgentCall] = Field(default_factory=dict)  # incl. a failed call
-    judges: list[JudgeResult] = Field(default_factory=list)  # swap only
+    judges: list[JudgeResult] = Field(default_factory=list)  # swap and rejudge
+
+
+class PromptRef(BaseModel):
+    version: int
+    sha256: str
+
+
+class RejudgeStats(BaseModel):
+    """One set of judge results, summarized; orders with no result are left out."""
+
+    winners: dict[JudgeOrder, list[Winner]]
+    mean_confidence: dict[JudgeOrder, float]
+    within_order_disagreement: float | None
+    across_order_disagreement: float | None
+    retry_rate: float  # share of judge calls whose first answer failed a check
+
+
+class RejudgeSummary(BaseModel):
+    source: RejudgeStats
+    new: RejudgeStats
+
+
+class RejudgeRun(BaseModel):
+    """The current judge prompt run again on the arguments of an earlier file."""
+
+    case_id: str
+    case_sha256: str  # the case file as it was when re-judging
+    source_path: str
+    source_sha256: str  # hash of the source file's bytes
+    source_case_sha256: str
+    source_judge_prompts: list[PromptRef]
+    current_judge_prompt: PromptRef
+    started_at: datetime
+    finished_at: datetime
+    claimant: Argument
+    respondent: Argument
+    source_judges: list[JudgeResult]
+    judges: list[JudgeResult]
+    summary: RejudgeSummary

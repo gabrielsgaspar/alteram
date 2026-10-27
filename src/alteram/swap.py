@@ -22,6 +22,7 @@ from alteram.models import (
     JudgeResult,
     SwapRun,
     SwapSummary,
+    Winner,
 )
 
 ORDERS: tuple[JudgeOrder, ...] = get_args(JudgeOrder)
@@ -31,21 +32,29 @@ def _share(differs: list[bool]) -> float | None:
     return sum(differs) / len(differs) if differs else None
 
 
+def disagreement(
+    winners: dict[JudgeOrder, list[Winner]],
+) -> tuple[float | None, float | None]:
+    """Share of winner pairs that differ: within the same order, then across."""
+    within = [a != b for ws in winners.values() for a, b in combinations(ws, 2)]
+    across = [a != b for a, b in product(*winners.values())]
+    return _share(within), _share(across)
+
+
 def summarize(judges: list[JudgeResult]) -> SwapSummary:
     winners = {
         order: [j.verdict.winner for j in judges if j.judge_order == order]
         for order in ORDERS
     }
-    within = [a != b for ws in winners.values() for a, b in combinations(ws, 2)]
-    across = [a != b for a, b in product(*winners.values())]
+    within, across = disagreement(winners)
     return SwapSummary(
         winners=winners,
         mean_confidence={
             order: mean(j.verdict.confidence for j in judges if j.judge_order == order)
             for order in ORDERS
         },
-        within_order_disagreement=_share(within),
-        across_order_disagreement=_share(across),
+        within_order_disagreement=within,
+        across_order_disagreement=across,
     )
 
 

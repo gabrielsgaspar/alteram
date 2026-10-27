@@ -20,6 +20,7 @@ Out of scope until the owner says otherwise: retrieval, web search, tools for ag
 uv sync                                         # install dependencies
 uv run alteram run cases/case-001.md            # run one case
 uv run alteram swap cases/case-001.md           # order-swap check on the judge
+uv run alteram rejudge runs/case-001/<file>.json  # current judge on saved arguments
 uv run pytest                                   # tests (never call the real API)
 uv run ruff check . && uv run ruff format .     # lint and format
 ```

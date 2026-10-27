@@ -1,4 +1,4 @@
-"""Command line: `alteram run` and `alteram swap`."""
+"""Command line: `alteram run`, `alteram swap` and `alteram rejudge`."""
 
 import argparse
 import os
@@ -19,14 +19,32 @@ from alteram.graph import (
     run_case,
 )
 from alteram.loader import load_case
-from alteram.models import AgentCall, Argument, JudgeOrder, Run, SwapRun, Verdict
+from alteram.models import (
+    AgentCall,
+    Argument,
+    JudgeOrder,
+    RejudgeRun,
+    RejudgeStats,
+    Run,
+    SwapRun,
+    Verdict,
+)
+from alteram.rejudge import (
+    CaseChanged,
+    SourceError,
+    check_case,
+    load_source,
+    run_rejudge,
+)
 from alteram.swap import ORDERS, run_swap
 
 REQUIRED_ENV = ("ANTHROPIC_API_KEY", LAWYER_MODEL_ENV, JUDGE_MODEL_ENV)
+REJUDGE_ENV = ("ANTHROPIC_API_KEY", JUDGE_MODEL_ENV)  # the lawyers are not called
 
 
-def missing_env() -> list[str]:
-    return [name for name in REQUIRED_ENV if not os.environ.get(name)]
+def missing_env(command: str) -> list[str]:
+    required = REJUDGE_ENV if command == "rejudge" else REQUIRED_ENV
+    return [name for name in required if not os.environ.get(name)]
 
 
 def save(model: BaseModel, runs_dir: Path, case_id: str, name: str) -> Path:
@@ -110,6 +128,38 @@ def format_swap(swap: SwapRun) -> str:
     return "\n".join(lines)
 
 
+def format_stats(label: str, stats: RejudgeStats) -> list[str]:
+    lines = [f"  {label}"]
+    for order in ORDERS:
+        winners = ", ".join(stats.winners[order]) or "-"
+        confidence = stats.mean_confidence.get(order)
+        mean = "n/a" if confidence is None else f"{confidence:.2f}"
+        lines.append(f"    {order:<17} winners: {winners}  mean confidence {mean}")
+    lines.append(
+        f"    within-order disagreement {format_share(stats.within_order_disagreement)}"
+        f", across-order {format_share(stats.across_order_disagreement)}"
+        f", retry rate {format_share(stats.retry_rate)}"
+    )
+    return lines
+
+
+def format_rejudge(rejudge: RejudgeRun) -> str:
+    old = ", ".join(
+        f"v{p.version} {p.sha256[:8]}" for p in rejudge.source_judge_prompts
+    )
+    new = rejudge.current_judge_prompt
+    lines = [
+        "== Re-judge ==",
+        f"  Source: {rejudge.source_path}",
+        f"  Judge prompt: source {old} -> current v{new.version} {new.sha256[:8]}",
+    ]
+    lines += format_stats("Source verdicts", rejudge.summary.source)
+    lines += format_stats("New verdicts", rejudge.summary.new)
+    rows = [call_row(f"judge x{len(rejudge.judges)}", [j.call for j in rejudge.judges])]
+    lines.append(format_calls(rows))
+    return "\n".join(lines)
+
+
 def print_run(run: Run) -> None:
     print(f"Case {run.case_id}, judge order {run.judge_order}\n")
     print(format_argument(run.claimant), end="\n\n")
@@ -127,28 +177,67 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     swap = commands.add_parser("swap", help="order-swap check on the judge")
     swap.add_argument("case", type=Path)
     swap.add_argument("--repeats", type=int, default=3)
+    rejudge = commands.add_parser(
+        "rejudge", help="current judge prompt on the arguments of an earlier file"
+    )
+    rejudge.add_argument("source", type=Path, help="a run or swap file")
+    rejudge.add_argument("--repeats", type=int, default=5)
+    rejudge.add_argument("--allow-changed-case", action="store_true")
     args = parser.parse_args(argv)
-    if args.command == "swap" and args.repeats < 1:
+    if args.command in ("swap", "rejudge") and args.repeats < 1:
         parser.error("--repeats must be at least 1")
     return args
+
+
+def rejudge_command(
+    args: argparse.Namespace,
+    chat_model: ChatModelFactory,
+    runs_dir: Path,
+    cases_dir: Path,
+    stamp: str,
+) -> int:
+    try:
+        source = load_source(args.source)
+        case_path = cases_dir / f"{source.case_id}.md"
+        if not case_path.is_file():
+            raise SourceError(f"{args.source}: its case file {case_path} is missing")
+        case = load_case(case_path)
+        if not args.allow_changed_case:
+            check_case(case, source)
+    except (SourceError, CaseChanged) as e:
+        print(f"Refused: {e}", file=sys.stderr)
+        return 2
+    try:
+        rejudge = run_rejudge(case, source, args.repeats, chat_model)
+    except RunFailed as e:
+        path = save(e.failed, runs_dir, case.id, f"{stamp}-failed")
+        print(f"Run failed: {e}\nPartial log saved to {path}", file=sys.stderr)
+        return 1
+    print(format_rejudge(rejudge))
+    path = save(rejudge, runs_dir, case.id, f"{stamp}-rejudge")
+    print(f"\nSaved to {path}")
+    return 0
 
 
 def main(
     argv: list[str] | None = None,
     chat_model: ChatModelFactory = anthropic_chat_model,
     runs_dir: Path = Path("runs"),
+    cases_dir: Path = Path("cases"),
 ) -> int:
     args = parse_args(argv)
     load_dotenv()
-    if missing := missing_env():
+    if missing := missing_env(args.command):
         print(
             f"Missing environment variables: {', '.join(missing)}. "
             "Set them in .env (see .env.example).",
             file=sys.stderr,
         )
         return 2
-    case = load_case(args.case)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")  # no ':' for Windows
+    if args.command == "rejudge":
+        return rejudge_command(args, chat_model, runs_dir, cases_dir, stamp)
+    case = load_case(args.case)
     try:
         if args.command == "run":
             run = run_case(case, args.order, chat_model)
