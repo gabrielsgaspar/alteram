@@ -29,8 +29,8 @@ One checkbox per step in `ALTERAM_SETUP_BRIEF.md` section 8. Tick a step only wh
   - Done 2026-10-26 (commit 3b9cbc7, pushed). Cowork wrote the node-by-node explanation with line references; Gabriel confirmed he can explain it. Details: 55 tests pass, ruff clean (re-run on Linux by Cowork). Phase 1 findings checked against the Anthropic docs: thinking can't be disabled; `display: "summarized"` is needed and returns only a summary; forced `tool_choice` is a 400, so structured outputs via `output_config.format`, no conversion call. Effort `high` for all agents, `max_tokens` 32000; refusal and max_tokens stops are hard failures; parse and check failures retried once. Carried to step 9: declare `anthropic` in pyproject (imported directly, currently only transitive); log the rejected attempt's error; judge-only entry point so swap reuses the same arguments; save failed runs.
 - [x] **9. Command line and run logs** — all three cases run, review notes written below
   - Done 2026-10-26. CLI built ("Add CLI with run logs and order-swap check", tracing forced off in tests); `anthropic` declared in pyproject. One `run` per case plus `swap --repeats 5` on all three. Total cost about $3 from logged tokens. One-sided case won, no order flips, so no prompt change is required by the brief; one judge label defect to fix (see review notes).
-- [ ] **10. Continuous integration** — CI green on GitHub
-  - Notes:
+- [x] **10. Continuous integration** — CI green on GitHub
+  - Done 2026-10-28. `main` (commit 44184a8) pushed to GitHub; CI run green: https://github.com/gabrielsgaspar/alteram/actions/runs/40666729199.
 - [ ] **11. README** — README on GitHub
   - Notes:
 - [ ] **12. Retrospective** — three answers recorded below, next item chosen
