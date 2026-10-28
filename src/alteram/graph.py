@@ -11,9 +11,11 @@ import anthropic
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ValidationError
 
+from alteram.events import Emit, EventLog, Sink, emitter, state_change
 from alteram.loader import load_prompt
 from alteram.models import (
     AgentCall,
@@ -135,6 +137,29 @@ def _call_agent[T: BaseModel](
     check: Callable[[T], T],
     chat_model: ChatModelFactory,
     budget: Budget,
+    emit: Emit,
+) -> tuple[T, AgentCall]:
+    """Call one agent and emit its events; any failure emits `error` first."""
+    try:
+        return _attempts(
+            role, env_var, effort, schema, text, check, chat_model, budget, emit
+        )
+    except Exception as e:
+        budget_stop = isinstance(e.__cause__, BudgetExceeded)
+        emit("error", error=str(e), exception=type(e).__name__, budget_stop=budget_stop)
+        raise
+
+
+def _attempts[T: BaseModel](
+    role: str,
+    env_var: str,
+    effort: str,
+    schema: type[T],
+    text: str,
+    check: Callable[[T], T],
+    chat_model: ChatModelFactory,
+    budget: Budget,
+    emit: Emit,
 ) -> tuple[T, AgentCall]:
     """Call one agent, parse and check its answer, and retry once on a failed check."""
     prompt = load_prompt(role)
@@ -152,13 +177,23 @@ def _call_agent[T: BaseModel](
             budget.reserve(worst)
         except BudgetExceeded as e:
             raise AgentError(f"{role} not called: {e}", role, call) from e
+        emit(
+            "agent_call_started",
+            attempt=attempt,
+            model=model_id,
+            prompt_version=prompt.version,
+            prompt_sha256=prompt.sha256,
+            effort=effort,
+            input=user_text,  # what the model sees besides the prompt; never thinking
+        )
         start = time.monotonic()
         try:
             reply = model.invoke([SystemMessage(prompt.text), HumanMessage(user_text)])
         except Exception:
             budget.settle(worst, 0.0)  # a request that failed is not billed
             raise
-        seconds += time.monotonic() - start
+        attempt_seconds = time.monotonic() - start
+        seconds += attempt_seconds
         usage: Any = reply.usage_metadata or {}
         model_reported = reply.response_metadata.get("model_name", "")
         # An unknown model raises here, never costs $0; the run then fails.
@@ -166,6 +201,16 @@ def _call_agent[T: BaseModel](
             model_reported, usage.get("input_tokens", 0), usage.get("output_tokens", 0)
         )
         budget.settle(worst, attempt_cost)
+        emit(
+            "agent_call_finished",
+            attempt=attempt,
+            model_reported=model_reported,
+            stop_reason=reply.response_metadata.get("stop_reason", ""),
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            cost_usd=attempt_cost,
+            seconds=attempt_seconds,
+        )
         input_tokens += usage.get("input_tokens", 0)
         output_tokens += usage.get("output_tokens", 0)
         cost += attempt_cost
@@ -189,17 +234,19 @@ def _call_agent[T: BaseModel](
         try:
             result = check(schema.model_validate_json(reply.text))
         except CHECK_ERRORS as e:
+            emit("check_failed", attempt=attempt, error=str(e))
             if attempt == 2:
                 raise AgentError(f"{role} failed checks twice: {e}", role, call) from e
             retry_error = str(e)
             user_text = f"{text}\n\n{RETRY_NOTE}{e}"
+            emit("retry", attempt=attempt + 1)
             continue
         return result, call
     raise AssertionError("unreachable")
 
 
 def run_lawyer(
-    case: Case, side: Side, chat_model: ChatModelFactory, budget: Budget
+    case: Case, side: Side, chat_model: ChatModelFactory, budget: Budget, sink: Sink
 ) -> tuple[Argument, AgentCall]:
     def check(argument: Argument) -> Argument:
         argument = assign_labels(set_side(argument, side))
@@ -215,6 +262,7 @@ def run_lawyer(
         check,
         chat_model,
         budget,
+        emitter(sink, "arguing", f"{side}_lawyer", side),
     )
 
 
@@ -222,7 +270,9 @@ def _lawyer(
     side: Side, chat_model: ChatModelFactory, budget: Budget
 ) -> Callable[[State], dict]:
     def node(state: State) -> dict:
-        argument, call = run_lawyer(state["case"], side, chat_model, budget)
+        argument, call = run_lawyer(
+            state["case"], side, chat_model, budget, get_stream_writer()
+        )
         return {side: argument, "calls": {side: call}}
 
     return node
@@ -250,6 +300,7 @@ def run_judge(
     judge_order: JudgeOrder,
     chat_model: ChatModelFactory,
     budget: Budget,
+    sink: Sink,
 ) -> tuple[Verdict, AgentCall]:
     """The judge alone, on arguments already written; the swap check reuses it."""
 
@@ -260,13 +311,24 @@ def run_judge(
         return verdict
 
     text = judge_input(case, claimant, respondent, judge_order)
+    emit = emitter(sink, "deciding", "judge", None)
     return _call_agent(
-        "judge", JUDGE_MODEL_ENV, JUDGE_EFFORT, Verdict, text, check, chat_model, budget
+        "judge",
+        JUDGE_MODEL_ENV,
+        JUDGE_EFFORT,
+        Verdict,
+        text,
+        check,
+        chat_model,
+        budget,
+        emit,
     )
 
 
 def _judge(chat_model: ChatModelFactory, budget: Budget) -> Callable[[State], dict]:
     def node(state: State) -> dict:
+        writer = get_stream_writer()
+        state_change(writer, "arguing", "deciding")
         verdict, call = run_judge(
             state["case"],
             state["claimant"],
@@ -274,7 +336,9 @@ def _judge(chat_model: ChatModelFactory, budget: Budget) -> Callable[[State], di
             state["judge_order"],
             chat_model,
             budget,
+            writer,
         )
+        state_change(writer, "deciding", "decided")
         return {"verdict": verdict, "calls": {"judge": call}}
 
     return node
@@ -297,18 +361,28 @@ def run_case(
     judge_order: JudgeOrder,
     chat_model: ChatModelFactory = anthropic_chat_model,
     budget: Budget | None = None,
+    events: EventLog | None = None,
 ) -> Run:
-    """Run the graph on one case; on failure raise RunFailed with what completed."""
+    """Run the graph on one case; on failure raise RunFailed with what completed.
+
+    Events go to `events`, which the caller keeps, so they survive a failure."""
     budget = budget or Budget(DEFAULT_RUN_BUDGET_USD)
+    events = events or EventLog(case.id)
     started_at = datetime.now(UTC)
     inputs: State = {"case": case, "judge_order": judge_order}
     result = inputs
     try:
         # "values" yields the whole state after each step, so a failure keeps
-        # the arguments of a step that finished.
+        # the arguments of a step that finished; "custom" carries the events.
+        state_change(events.add, None, "arguing")
         graph = build_graph(chat_model, budget)
-        for state in graph.stream(inputs, stream_mode="values"):
-            result = state
+        for part in graph.stream(
+            inputs, stream_mode=["values", "custom"], version="v2"
+        ):
+            if part["type"] == "values":
+                result = part["data"]
+            else:
+                events.add(part["data"])
     except Exception as e:
         calls = dict(result.get("calls", {}))
         if isinstance(e, AgentError) and e.call:

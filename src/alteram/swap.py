@@ -5,6 +5,7 @@ from itertools import combinations, product
 from statistics import mean
 from typing import get_args
 
+from alteram.events import EventLog, state_change
 from alteram.graph import (
     AgentError,
     ChatModelFactory,
@@ -64,16 +65,23 @@ def run_swap(
     repeats: int,
     chat_model: ChatModelFactory = anthropic_chat_model,
     budget: Budget | None = None,
+    events: EventLog | None = None,
 ) -> SwapRun:
     """Lawyers once, then the judge `repeats` times in each order."""
     budget = budget or Budget(DEFAULT_RUN_BUDGET_USD)
+    events = events or EventLog(case.id)
+    sink = events.add
     started_at = datetime.now(UTC)
     arguments: dict[str, Argument] = {}
     calls: dict[str, AgentCall] = {}
     judges: list[JudgeResult] = []
     try:
+        state_change(sink, None, "arguing")
         for side in ("claimant", "respondent"):
-            arguments[side], calls[side] = run_lawyer(case, side, chat_model, budget)
+            arguments[side], calls[side] = run_lawyer(
+                case, side, chat_model, budget, sink
+            )
+        state_change(sink, "arguing", "deciding")
         # Orders interleaved, so drift over time doesn't look like an order effect.
         for _ in range(repeats):
             for order in ORDERS:
@@ -84,10 +92,12 @@ def run_swap(
                     order,
                     chat_model,
                     budget,
+                    sink,
                 )
                 judges.append(
                     JudgeResult(judge_order=order, verdict=verdict, call=call)
                 )
+        state_change(sink, "deciding", "decided")
     except Exception as e:
         if isinstance(e, AgentError) and e.call:
             calls[e.role] = e.call

@@ -27,6 +27,7 @@ from alteram.evaluate import (
     summarize,
     summary_markdown,
 )
+from alteram.events import events_path, load_events
 from alteram.graph import JUDGE_MODEL_ENV, LAWYER_MODEL_ENV, run_case
 from alteram.models import (
     AgentCall,
@@ -129,12 +130,19 @@ def test_failed_run_is_recorded_and_the_eval_continues(tmp_path: Path) -> None:
     code = cli.main(argv, factory(models), tmp_path / "runs", eval_dir=tmp_path / "e")
     assert code == 1
     [out_dir] = (tmp_path / "e" / "runs").iterdir()
-    names = sorted(p.name for p in (out_dir / "case-001").iterdir())
+    names = sorted(p.name for p in (out_dir / "case-001").glob("*.json"))
     assert names == [
         "r1-claimant_first.json",
         "r2-respondent_first-failed.json",
         "r3-claimant_first.json",
     ]
+    # Each run, failed or not, has its events beside it; load_results ignores them.
+    for name in names:
+        events = load_events(events_path(out_dir / "case-001" / name))
+        assert events[0].type == "state_change"
+    failed_events = load_events(events_path(out_dir / "case-001" / names[1]))
+    assert failed_events[-1].type == "error"
+    assert len(load_results(out_dir)) == 3
     failed = FailedRun.model_validate_json(
         (out_dir / "case-001" / names[1]).read_text(encoding="utf-8")
     )

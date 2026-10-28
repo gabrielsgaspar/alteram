@@ -8,6 +8,7 @@ from statistics import mean
 
 from pydantic import BaseModel, ValidationError
 
+from alteram.events import EventLog, state_change
 from alteram.graph import AgentError, ChatModelFactory, RunFailed, run_judge
 from alteram.loader import load_prompt
 from alteram.models import (
@@ -122,14 +123,18 @@ def run_rejudge(
     repeats: int,
     chat_model: ChatModelFactory,
     budget: Budget | None = None,
+    events: EventLog | None = None,
 ) -> RejudgeRun:
     """The judge alone, `repeats` times in each order; the lawyers are never called."""
     budget = budget or Budget(DEFAULT_RUN_BUDGET_USD)
+    events = events or EventLog(case.id)
+    sink = events.add
     started_at = datetime.now(UTC)
     prompt = load_prompt("judge")
     judges: list[JudgeResult] = []
     calls: dict[str, AgentCall] = {}
     try:
+        state_change(sink, None, "deciding")
         # Orders interleaved, as in the swap check.
         for _ in range(repeats):
             for order in ORDERS:
@@ -140,10 +145,12 @@ def run_rejudge(
                     order,
                     chat_model,
                     budget,
+                    sink,
                 )
                 judges.append(
                     JudgeResult(judge_order=order, verdict=verdict, call=call)
                 )
+        state_change(sink, "deciding", "decided")
     except Exception as e:
         if isinstance(e, AgentError) and e.call:
             calls[e.role] = e.call

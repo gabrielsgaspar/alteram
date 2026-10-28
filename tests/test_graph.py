@@ -9,6 +9,7 @@ from langchain_core.language_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import Field
 
+from alteram.events import Event, EventLog
 from alteram.graph import (
     JUDGE_MODEL_ENV,
     LAWYER_MODEL_ENV,
@@ -308,8 +309,124 @@ def test_budget_stop_on_retry_logs_the_first_attempt(case: Case) -> None:
     # Room for the first attempt only: the retry's worst case is larger still.
     budget = Budget(lawyer_worst_case(case, "claimant"))
     with pytest.raises(AgentError, match="claimant not called: budget") as info:
-        run_lawyer(case, "claimant", factory(models), budget)
+        run_lawyer(case, "claimant", factory(models), budget, EventLog(case.id).add)
     assert len(models["claimant"].seen) == 1
     call = info.value.call
     assert call is not None and call.attempts == 1 and call.cost_usd
     assert budget.spent_usd == pytest.approx(call.cost_usd)
+
+
+# --- events -----------------------------------------------------------------
+
+
+def run_events(case: Case, models: dict[str, RecordingFake]) -> list[Event]:
+    log = EventLog(case.id)
+    try:
+        run_case(case, "claimant_first", factory(models), events=log)
+    except RunFailed:
+        pass
+    return log.events
+
+
+def kinds(events: list[Event], agent: str | None) -> list[str]:
+    return [e.type for e in events if e.agent == agent]
+
+
+def test_event_order_for_a_full_run(case: Case) -> None:
+    events = run_events(case, fakes())
+    changes = [(e.payload["from"], e.payload["to"]) for e in events if e.agent is None]
+    assert changes == [
+        (None, "arguing"),
+        ("arguing", "deciding"),
+        ("deciding", "decided"),
+    ]
+    assert events[0].type == "state_change" and events[-1].payload["to"] == "decided"
+    for side in SIDES:
+        agent = f"{side}_lawyer"
+        assert kinds(events, agent) == ["agent_call_started", "agent_call_finished"]
+        assert {(e.stage, e.side) for e in events if e.agent == agent} == {
+            ("arguing", side)
+        }
+    # Judge events sit between "deciding" and "decided", after every lawyer event.
+    deciding = next(
+        i for i, e in enumerate(events) if e.payload.get("to") == "deciding"
+    )
+    lawyer = [i for i, e in enumerate(events) if e.agent and e.agent != "judge"]
+    judge = [i for i, e in enumerate(events) if e.agent == "judge"]
+    assert max(lawyer) < deciding < min(judge) and max(judge) == len(events) - 2
+    assert kinds(events, "judge") == ["agent_call_started", "agent_call_finished"]
+    assert {(e.stage, e.side) for e in events if e.agent == "judge"} == {
+        ("deciding", None)
+    }
+    assert {e.case_id for e in events} == {case.id}
+    finished = next(e for e in events if e.type == "agent_call_finished")
+    assert (finished.payload["input_tokens"], finished.payload["output_tokens"]) == (
+        10,
+        5,
+    )
+    assert finished.payload["cost_usd"] == pytest.approx((10 * 2 + 5 * 10) / 1e6)
+
+
+@pytest.mark.parametrize(
+    "models",
+    [
+        lambda: fakes(),
+        lambda: fakes(claimant=[reply(argument(citation=99)), reply(argument())]),
+        lambda: fakes(judge=[reply(VERDICT, stop_reason="max_tokens")]),
+    ],
+    ids=["ok", "retry", "failed"],
+)
+def test_seq_is_strictly_increasing(case: Case, models: Any) -> None:
+    events = run_events(case, models())
+    assert [e.seq for e in events] == list(range(1, len(events) + 1))
+    assert len(events) >= 5  # not vacuous: run, both lawyers and judge
+
+
+def test_retry_emits_check_failed_then_retry(case: Case) -> None:
+    models = fakes(claimant=[reply(argument(citation=99)), reply(argument())])
+    events = run_events(case, models)
+    assert kinds(events, "claimant_lawyer") == [
+        "agent_call_started",
+        "agent_call_finished",
+        "check_failed",
+        "retry",
+        "agent_call_started",
+        "agent_call_finished",
+    ]
+    claimant = [e for e in events if e.agent == "claimant_lawyer"]
+    assert "paragraph 99" in claimant[2].payload["error"]
+    assert claimant[3].payload == {"attempt": 2}
+    assert claimant[4].payload["attempt"] == 2
+    assert RETRY_NOTE in claimant[4].payload["input"]
+
+
+def test_judge_call_started_payload_has_no_lawyer_thinking(case: Case) -> None:
+    events = run_events(case, fakes())  # both lawyers think MARKER
+    [started] = [
+        e for e in events if e.agent == "judge" and e.type == "agent_call_started"
+    ]
+    # Not vacuous: the payload carries the judge's whole input, arguments included.
+    assert "Claimant's argument" in started.payload["input"]
+    assert "Respondent's argument" in started.payload["input"]
+    assert MARKER not in json.dumps(started.payload)
+    assert all(MARKER not in e.model_dump_json() for e in events)
+
+
+def test_failed_check_twice_ends_with_error_event(case: Case) -> None:
+    bad = reply(argument(citation=99))
+    events = run_events(case, fakes(claimant=[bad, bad]))
+    assert kinds(events, "claimant_lawyer")[-2:] == ["check_failed", "error"]
+    error = [e for e in events if e.type == "error"][-1]
+    assert "failed checks twice" in error.payload["error"]
+    assert error.payload["budget_stop"] is False
+    assert not any(e.payload.get("to") == "decided" for e in events)
+
+
+def test_budget_stop_emits_error_event(case: Case) -> None:
+    budget = Budget(lawyer_worst_case(case, "claimant"))  # first attempt only
+    models = fakes(claimant=[reply(argument(citation=99)), reply(argument())])
+    log = EventLog(case.id)
+    with pytest.raises(AgentError):
+        run_lawyer(case, "claimant", factory(models), budget, log.add)
+    assert [e.type for e in log.events][-3:] == ["check_failed", "retry", "error"]
+    assert log.events[-1].payload["budget_stop"] is True

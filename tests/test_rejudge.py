@@ -19,6 +19,7 @@ from test_graph import (
 )
 
 from alteram import cli
+from alteram.events import events_path, load_events
 from alteram.graph import JUDGE_MODEL_ENV, LAWYER_MODEL_ENV
 from alteram.loader import load_prompt
 from alteram.models import RejudgeRun
@@ -141,6 +142,10 @@ def test_changed_case_is_refused_unless_allowed(
     argv = ["rejudge", str(source), "--repeats", "1", "--allow-changed-case"]
     assert cli.main(argv, judge_only(judge), runs, cases) == 0
     assert len(judge.seen) == 2
+    [path] = saved(runs)
+    events = load_events(events_path(path))
+    assert [e.agent for e in events if e.type == "agent_call_started"] == ["judge"] * 2
+    assert events[-1].payload == {"from": "deciding", "to": "decided"}
 
 
 def test_failed_run_file_is_refused(

@@ -19,6 +19,7 @@ Out of scope until the owner says otherwise: retrieval, web search, tools for ag
 ```bash
 uv sync                                         # install dependencies
 uv run alteram run cases/case-001.md            # run one case
+uv run alteram run cases/case-001.md --follow   # same, printing events as they happen
 uv run alteram swap cases/case-001.md           # order-swap check on the judge
 uv run alteram rejudge runs/case-001/<file>.json  # current judge on saved arguments
 uv run alteram eval --dry-run --n 3              # planned calls and cost, no model calls
@@ -38,7 +39,7 @@ src/alteram/     package code: models, loader, graph, cli
 prompts/         agent prompts as Markdown, one file per agent
 cases/           test cases with numbered paragraphs
 tests/           pytest tests
-runs/            run logs as JSON (gitignored)
+runs/            run logs as JSON, events beside them as .events.jsonl (gitignored)
 eval/            eval runs (gitignored) and baselines (committed)
 docs/            setup log, ideas, prompt change log
 .claude/skills/  task-specific instructions for Claude Code

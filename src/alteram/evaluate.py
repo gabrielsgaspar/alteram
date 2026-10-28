@@ -10,6 +10,7 @@ from typing import NamedTuple, get_args
 
 from pydantic import ValidationError
 
+from alteram.events import EventLog, events_path, save_events
 from alteram.graph import MAX_TOKENS, ChatModelFactory, RunFailed, run_case
 from alteram.loader import load_prompt
 from alteram.models import (
@@ -86,13 +87,20 @@ def run_eval(
     out_dir: Path,
     budget_limit: float,
 ) -> list[Saved]:
-    """Run every planned run in turn; a failed run is saved and the eval goes on."""
+    """Run every planned run in turn; a failed run is saved and the eval goes on.
+
+    Each run's events are saved beside it as `<run>.events.jsonl`."""
     saved: list[Saved] = []
     for planned in plan_runs(cases, n):
         result: Run | FailedRun
+        events = EventLog(planned.case.id)
         try:
             result = run_case(
-                planned.case, planned.judge_order, chat_model, Budget(budget_limit)
+                planned.case,
+                planned.judge_order,
+                chat_model,
+                Budget(budget_limit),
+                events,
             )
         except RunFailed as e:
             result = e.failed
@@ -100,6 +108,7 @@ def run_eval(
         path = out_dir / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+        save_events(events, events_path(path))
         status = "failed" if isinstance(result, FailedRun) else result.verdict.winner
         print(f"  {name}: {status}")
         saved.append(Saved(name, result))

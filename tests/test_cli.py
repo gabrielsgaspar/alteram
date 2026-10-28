@@ -8,6 +8,7 @@ import pytest
 from test_graph import JUDGE_MODEL, LAWYER_MODEL, VERDICT, factory, fakes, reply
 
 from alteram import cli
+from alteram.events import events_path, format_event, load_events
 from alteram.graph import JUDGE_MODEL_ENV, LAWYER_MODEL_ENV
 from alteram.models import (
     AgentCall,
@@ -257,3 +258,45 @@ def test_bad_budget_env_stops_before_any_model(
     assert cli.main(["run", str(CASE_001)], no_model, tmp_path) == 2
     assert RUN_BUDGET_ENV in capsys.readouterr().err
     assert saved(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("argv", "judge", "suffix", "last"),
+    [
+        (["run"], [reply(VERDICT)], "", "decided"),
+        (["swap", "--repeats", "1"], [reply(VERDICT)] * 2, "-swap", "decided"),
+        (["run"], [reply(VERDICT, stop_reason="max_tokens")], "-failed", "error"),
+    ],
+    ids=["run", "swap", "failed-run"],
+)
+def test_events_are_saved_beside_the_run_file(
+    tmp_path: Path, argv: list[str], judge: list, suffix: str, last: str
+) -> None:
+    argv = [argv[0], str(CASE_001), *argv[1:]]
+    cli.main(argv, factory(fakes(judge=judge)), tmp_path)
+    [path] = saved(tmp_path)
+    assert path.name.endswith(f"{suffix}.json")
+    events = load_events(events_path(path))
+    assert [e.seq for e in events] == list(range(1, len(events) + 1))
+    assert {e.case_id for e in events} == {"case-001"}
+    assert events[-1].payload.get("to", events[-1].type) == last
+
+
+def test_run_follow_prints_events_as_they_happen(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = cli.main(["run", str(CASE_001), "--follow"], factory(fakes()), tmp_path)
+    assert code == 0
+    out = capsys.readouterr().out
+    lines = [line for line in out.splitlines() if line.startswith("#")]
+    [path] = saved(tmp_path)
+    events = load_events(events_path(path))
+    assert lines == [format_event(e) for e in events]
+    assert out.index(lines[-1]) < out.index("== Claimant ==")  # before the summary
+
+
+def test_run_without_follow_prints_no_events(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cli.main(["run", str(CASE_001)], factory(fakes()), tmp_path)
+    assert "agent_call_started" not in capsys.readouterr().out

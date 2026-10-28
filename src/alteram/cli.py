@@ -26,6 +26,7 @@ from alteram.evaluate import (
     summarize,
     summary_markdown,
 )
+from alteram.events import Event, EventLog, events_path, format_event, save_events
 from alteram.graph import (
     JUDGE_MODEL_ENV,
     LAWYER_MODEL_ENV,
@@ -69,6 +70,19 @@ def save(model: BaseModel, runs_dir: Path, case_id: str, name: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(model.model_dump_json(indent=2), encoding="utf-8")
     return path
+
+
+def save_with_events(
+    model: BaseModel, events: EventLog, runs_dir: Path, case_id: str, name: str
+) -> Path:
+    """Save a run file and its events beside it, as `<name>.events.jsonl`."""
+    path = save(model, runs_dir, case_id, name)
+    save_events(events, events_path(path))
+    return path
+
+
+def print_event(event: Event) -> None:
+    print(format_event(event), flush=True)
 
 
 def format_argument(argument: Argument) -> str:
@@ -210,6 +224,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     run = commands.add_parser("run", help="run both lawyers and the judge on a case")
     run.add_argument("case", type=Path)
     run.add_argument("--order", choices=get_args(JudgeOrder), default="claimant_first")
+    run.add_argument(
+        "--follow", action="store_true", help="print events as they happen"
+    )
     swap = commands.add_parser("swap", help="order-swap check on the judge")
     swap.add_argument("case", type=Path)
     swap.add_argument("--repeats", type=int, default=3)
@@ -266,14 +283,15 @@ def rejudge_command(
     except (SourceError, CaseChanged) as e:
         print(f"Refused: {e}", file=sys.stderr)
         return 2
+    events = EventLog(case.id)
     try:
-        rejudge = run_rejudge(case, source, args.repeats, chat_model, budget)
+        rejudge = run_rejudge(case, source, args.repeats, chat_model, budget, events)
     except RunFailed as e:
-        path = save(e.failed, runs_dir, case.id, f"{stamp}-failed")
+        path = save_with_events(e.failed, events, runs_dir, case.id, f"{stamp}-failed")
         report_failure(e, path)
         return 1
     print(format_rejudge(rejudge))
-    path = save(rejudge, runs_dir, case.id, f"{stamp}-rejudge")
+    path = save_with_events(rejudge, events, runs_dir, case.id, f"{stamp}-rejudge")
     print(f"\nSaved to {path}")
     return 0
 
@@ -384,17 +402,21 @@ def main(
     if args.command == "rejudge":
         return rejudge_command(args, chat_model, runs_dir, cases_dir, stamp, budget)
     case = load_case(args.case)
+    follow = args.command == "run" and args.follow
+    events = EventLog(case.id, print_event if follow else None)
     try:
         if args.command == "run":
-            run = run_case(case, args.order, chat_model, budget)
+            run = run_case(case, args.order, chat_model, budget, events)
+            if follow:
+                print()
             print_run(run)
-            path = save(run, runs_dir, case.id, stamp)
+            path = save_with_events(run, events, runs_dir, case.id, stamp)
         else:
-            swap = run_swap(case, args.repeats, chat_model, budget)
+            swap = run_swap(case, args.repeats, chat_model, budget, events)
             print(format_swap(swap))
-            path = save(swap, runs_dir, case.id, f"{stamp}-swap")
+            path = save_with_events(swap, events, runs_dir, case.id, f"{stamp}-swap")
     except RunFailed as e:
-        path = save(e.failed, runs_dir, case.id, f"{stamp}-failed")
+        path = save_with_events(e.failed, events, runs_dir, case.id, f"{stamp}-failed")
         report_failure(e, path)
         return 1
     print(f"\nSaved to {path}")
