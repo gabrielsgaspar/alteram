@@ -34,6 +34,11 @@ SANDBOX_SETTINGS = json.dumps(
         }
     }
 )
+# No MCP servers: --tools does not cover MCP tools, and the user's claude.ai
+# connectors otherwise load hundreds of tool definitions into every call.
+NO_MCP = ["--strict-mcp-config"]
+NO_MCP_DENIED = ["mcp__*"]
+BUILDER_TOOLS = "Read,Edit,Write,Glob,Grep,Bash"
 BUILDER_ALLOWED = [
     "Bash(uv run pytest *)",
     "Bash(uv run ruff *)",
@@ -121,7 +126,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--call-budget", type=float, default=1.0, help="budget per agent call, USD"
     )
-    parser.add_argument("--base", default="main", help="branch to diff against")
+    parser.add_argument(
+        "--base", default="main", help="branch the run must not start on"
+    )
     args = parser.parse_args(argv)
     if args.loops < 1:
         parser.error("--loops must be at least 1")
@@ -165,8 +172,13 @@ def builder_command(session_id: str | None, call_budget: float) -> list[str]:
         "acceptEdits",
         "--permission-prompts",
         "none",
+        *NO_MCP,
+        "--tools",
+        BUILDER_TOOLS,
         "--allowedTools",
         *BUILDER_ALLOWED,
+        "--disallowedTools",
+        *NO_MCP_DENIED,
         "--settings",
         SANDBOX_SETTINGS,
         "--append-system-prompt-file",
@@ -192,12 +204,14 @@ def reviewer_command(call_budget: float) -> list[str]:
         "dontAsk",
         "--permission-prompts",
         "none",
+        *NO_MCP,
         "--tools",
         REVIEWER_TOOLS,
         "--allowedTools",
         *REVIEWER_ALLOWED,
         "--disallowedTools",
         *REVIEWER_DENIED,
+        *NO_MCP_DENIED,
         "--settings",
         SANDBOX_SETTINGS,
         "--append-system-prompt-file",
@@ -324,14 +338,17 @@ def review_feedback(verdict: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def reviewer_prompt(task: Path, base: str) -> str:
+def reviewer_prompt(task: Path, start: str) -> str:
+    """Show only this run's changes: commits since the run started, and any
+    uncommitted ones."""
     text = task.read_text(encoding="utf-8")
-    committed = git("diff", f"{base}...HEAD")
+    committed = git("diff", f"{start}..HEAD")
     uncommitted = git("diff", "HEAD")
     return (
         f"Task file: {task.as_posix()}\n\n{text}\n\n"
         "The gate (ruff check, ruff format --check, pytest) has passed.\n\n"
-        f"## git diff {base}...HEAD\n\n```diff\n{committed}```\n\n"
+        f"## Changes made in this run (git diff {start[:7]}..HEAD)\n\n"
+        f"```diff\n{committed}```\n\n"
         f"## Uncommitted changes\n\n```diff\n{uncommitted or '(none)'}\n```\n"
     )
 
@@ -362,6 +379,7 @@ def make_run_dir() -> tuple[Path, Path]:
 
 
 def run_loop(args: argparse.Namespace, summary: Summary, logs: dict[str, Log]) -> None:
+    start = git("rev-parse", "HEAD").strip()
     builder_session: str | None = None
     builder_cost = 0.0  # latest cumulative total of the resumed builder session
     reviewer_cost = 0.0
@@ -413,7 +431,7 @@ def run_loop(args: argparse.Namespace, summary: Summary, logs: dict[str, Log]) -
         logs["reviewer"].write(f"\n===== loop {n} =====\n")
         review = run_claude(
             reviewer_command(min(args.call_budget, remaining())),
-            reviewer_prompt(args.task, args.base),
+            reviewer_prompt(args.task, start),
             logs["reviewer"],
             logs["reviewer_raw"],
         )

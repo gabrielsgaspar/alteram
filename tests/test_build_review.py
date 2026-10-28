@@ -281,6 +281,29 @@ def test_reviewer_cannot_edit_or_write(repo: Path, br: ModuleType) -> None:
     assert "Edit" not in flag_values(argv, "--tools")[0].split(",")
 
 
+def test_no_mcp_tools_for_either_agent(repo: Path, br: ModuleType) -> None:
+    # Smoke run 1: claude.ai connectors loaded ~400k tokens of MCP tool
+    # definitions into the reviewer, whose --tools list had removed ToolSearch.
+    script(repo, [{"write": ["work.txt"]}], [{"structured_output": APPROVE}])
+    br.main(["task.md"])
+    for call in calls(repo):
+        assert "--strict-mcp-config" in call["argv"]
+        assert "mcp__*" in flag_values(call["argv"], "--disallowedTools")
+        assert "--tools" in call["argv"]
+
+
+def test_reviewer_sees_only_this_runs_diff(repo: Path, br: ModuleType) -> None:
+    # Commits already on the branch before the run are not the builder's work.
+    (repo / "earlier.txt").write_text("committed before the run\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "earlier work")
+    script(repo, [{"write": ["work.txt"]}], [{"structured_output": APPROVE}])
+    br.main(["task.md"])
+    stdin = calls(repo, "reviewer")[0]["stdin"]
+    assert "work.txt" in stdin
+    assert "earlier.txt" not in stdin
+
+
 def test_failed_builder_call_stops(repo: Path, br: ModuleType) -> None:
     script(repo, [{"subtype": "error_max_budget_usd", "exit": 1}], [{}])
     assert br.main(["task.md"]) == 1
