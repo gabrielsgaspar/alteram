@@ -224,3 +224,5 @@ runs/
 
 # Eval runs (baselines in eval/baselines/ are committed)
 eval/runs/
+# Build → review harness logs
+.loop/
