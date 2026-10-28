@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["approve", "changes"]
+    },
+    "must_fix": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Problems that block approval: an unmet acceptance criterion or a broken AGENTS.md rule. Name the file and line."
+    },
+    "nice_to_have": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Optional suggestions that do not block approval."
+    },
+    "checked": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Each acceptance criterion you actually checked, and how."
+    }
+  },
+  "required": ["verdict", "must_fix", "nice_to_have", "checked"],
+  "additionalProperties": false
+}
