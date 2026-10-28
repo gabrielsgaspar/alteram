@@ -15,6 +15,7 @@ EventType = Literal[
     "agent_call_finished",
     "check_failed",
     "retry",
+    "warning",
     "state_change",
     "error",
 ]
@@ -117,6 +118,8 @@ def _summary(event: Event) -> str:
             )
         case "check_failed" | "error":
             return p["error"]
+        case "warning":
+            return p["message"]
 
 
 def format_event(event: Event) -> str:

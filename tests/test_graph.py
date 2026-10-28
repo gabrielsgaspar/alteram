@@ -252,20 +252,36 @@ def test_every_call_logs_its_cost(case: Case) -> None:
     assert run.calls["judge"].cost_usd == pytest.approx(one_reply)
 
 
-def test_unknown_reported_model_fails_the_run(case: Case) -> None:
-    models = fakes(claimant=[reply(argument(), model="claude-unpriced")])
-    with pytest.raises(RunFailed, match="claude-unpriced") as info:
-        run_case(case, "claimant_first", factory(models))
-    assert isinstance(info.value.__cause__, UnknownModel)
+def test_dated_reported_model_priced_as_configured_and_warns(case: Case) -> None:
+    dated = f"{LAWYER_MODEL}-20261001"
+    models = fakes(claimant=[reply(argument(), model=dated)])
+    log = EventLog(case.id)
+    run = run_case(case, "claimant_first", factory(models), events=log)
+    claimant = run.calls["claimant"]
+    assert (claimant.model_reported, claimant.priced_as) == (dated, LAWYER_MODEL)
+    assert claimant.cost_usd == pytest.approx((10 * 2 + 5 * 10) / 1_000_000)
+    for role in ("respondent", "judge"):
+        assert run.calls[role].priced_as == run.calls[role].model_reported
+    assert kinds(log.events, "claimant_lawyer") == [
+        "agent_call_started",
+        "agent_call_finished",
+        "warning",
+    ]
+    [warning] = [e for e in log.events if e.type == "warning"]
+    assert warning.payload["model_reported"] == dated
+    assert warning.payload["priced_as"] == LAWYER_MODEL
+    assert dated in warning.payload["message"]
 
 
-def test_unknown_configured_model_fails_before_any_call(
+def test_both_models_unknown_fails_before_any_call(
     case: Case, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(LAWYER_MODEL_ENV, "claude-unpriced")
-    models = fakes()
-    with pytest.raises(RunFailed, match="claude-unpriced"):
+    unpriced = reply(argument(), model="claude-unpriced-20261001")
+    models = fakes(claimant=[unpriced], respondent=[unpriced])
+    with pytest.raises(RunFailed, match="claude-unpriced") as info:
         run_case(case, "claimant_first", factory(models))
+    assert isinstance(info.value.__cause__, UnknownModel)
     assert models["claimant"].seen == [] and models["respondent"].seen == []
 
 

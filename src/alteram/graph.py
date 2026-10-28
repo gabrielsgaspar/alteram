@@ -32,6 +32,7 @@ from alteram.pricing import (
     Budget,
     BudgetExceeded,
     cost_usd,
+    priced_model,
     worst_case_usd,
 )
 from alteram.validate import (
@@ -196,9 +197,11 @@ def _attempts[T: BaseModel](
         seconds += attempt_seconds
         usage: Any = reply.usage_metadata or {}
         model_reported = reply.response_metadata.get("model_name", "")
-        # An unknown model raises here, never costs $0; the run then fails.
+        # An unpriced reported model is priced as the configured one, which
+        # worst_case_usd has already found in PRICES; nothing ever costs $0.
+        priced_as = priced_model(model_reported, model_id)
         attempt_cost = cost_usd(
-            model_reported, usage.get("input_tokens", 0), usage.get("output_tokens", 0)
+            priced_as, usage.get("input_tokens", 0), usage.get("output_tokens", 0)
         )
         budget.settle(worst, attempt_cost)
         emit(
@@ -211,6 +214,15 @@ def _attempts[T: BaseModel](
             cost_usd=attempt_cost,
             seconds=attempt_seconds,
         )
+        if priced_as != model_reported:
+            emit(
+                "warning",
+                attempt=attempt,
+                message=f"no price for reported model {model_reported!r}; "
+                f"priced as configured {model_id!r}",
+                model_reported=model_reported,
+                priced_as=priced_as,
+            )
         input_tokens += usage.get("input_tokens", 0)
         output_tokens += usage.get("output_tokens", 0)
         cost += attempt_cost
@@ -228,6 +240,7 @@ def _attempts[T: BaseModel](
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost_usd=cost,
+            priced_as=priced_as,
             seconds=seconds,
         )
         _require_complete(role, reply, call)
