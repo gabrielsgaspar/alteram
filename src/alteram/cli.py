@@ -1,4 +1,4 @@
-"""Command line: `alteram run`, `alteram swap` and `alteram rejudge`."""
+"""Command line: `alteram run`, `swap`, `rejudge` and `eval`."""
 
 import argparse
 import os
@@ -8,8 +8,24 @@ from pathlib import Path
 from typing import get_args
 
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
+from alteram.evaluate import (
+    BaselineError,
+    compare,
+    current_prompts,
+    estimate,
+    few_cases_warning,
+    format_compare,
+    format_estimate,
+    load_results,
+    load_summary,
+    past_calls,
+    run_eval,
+    save_baseline,
+    summarize,
+    summary_markdown,
+)
 from alteram.graph import (
     JUDGE_MODEL_ENV,
     LAWYER_MODEL_ENV,
@@ -29,7 +45,7 @@ from alteram.models import (
     SwapRun,
     Verdict,
 )
-from alteram.pricing import Budget, run_budget_from_env
+from alteram.pricing import Budget, UnknownModel, run_budget_from_env
 from alteram.rejudge import (
     CaseChanged,
     SourceError,
@@ -203,9 +219,31 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     rejudge.add_argument("source", type=Path, help="a run or swap file")
     rejudge.add_argument("--repeats", type=int, default=5)
     rejudge.add_argument("--allow-changed-case", action="store_true")
+    evaluate = commands.add_parser(
+        "eval", help="the whole graph n times per case, scored against `expected`"
+    )
+    evaluate.add_argument("--cases", type=Path, default=Path("cases"))
+    evaluate.add_argument("--n", type=int, default=3, help="runs per case")
+    evaluate.add_argument("--seed", type=int, default=0, help="bootstrap seed")
+    evaluate.add_argument(
+        "--dry-run", action="store_true", help="print the plan and cost; no calls"
+    )
+    eval_commands = evaluate.add_subparsers(dest="eval_command")
+    baseline = eval_commands.add_parser(
+        "baseline", help="copy a summary.json to eval/baselines/"
+    )
+    baseline.add_argument("summary", type=Path)
+    comparison = eval_commands.add_parser(
+        "compare", help="differences between two eval summaries, b - a"
+    )
+    comparison.add_argument("a", type=Path)
+    comparison.add_argument("b", type=Path)
+    comparison.add_argument("--seed", type=int, default=0, help="bootstrap seed")
     args = parser.parse_args(argv)
     if args.command in ("swap", "rejudge") and args.repeats < 1:
         parser.error("--repeats must be at least 1")
+    if args.command == "eval" and args.n < 1:
+        parser.error("--n must be at least 1")
     return args
 
 
@@ -240,14 +278,96 @@ def rejudge_command(
     return 0
 
 
+def compare_command(args: argparse.Namespace) -> int:
+    try:
+        a, b = load_summary(args.a), load_summary(args.b)
+    except (OSError, ValidationError) as e:
+        print(f"Refused: not a readable eval summary: {e}", file=sys.stderr)
+        return 2
+    print(format_compare(*compare(a, b, args.seed)))
+    return 0
+
+
+def eval_command(
+    args: argparse.Namespace,
+    chat_model: ChatModelFactory,
+    runs_dir: Path,
+    eval_dir: Path,
+) -> int:
+    if args.eval_command == "baseline":
+        try:
+            target = save_baseline(args.summary, eval_dir / "baselines")
+        except BaselineError as e:
+            print(f"Refused: {e}", file=sys.stderr)
+            return 2
+        print(f"Baseline saved to {target}. Commit it to keep it.")
+        return 0
+    if args.eval_command == "compare":
+        return compare_command(args)
+    cases = [load_case(path) for path in sorted(args.cases.glob("*.md"))]
+    if not cases:
+        print(f"No cases found in {args.cases}", file=sys.stderr)
+        return 2
+    try:
+        limit = run_budget_from_env()
+    except ValueError as e:
+        print(f"{e} (see .env.example).", file=sys.stderr)
+        return 2
+    lawyer, judge = os.environ.get(LAWYER_MODEL_ENV), os.environ.get(JUDGE_MODEL_ENV)
+    if args.dry_run:  # no API key needed, and the model factory is never touched
+        sources = [runs_dir, eval_dir / "runs"]
+        models = {"claimant": lawyer, "respondent": lawyer, "judge": judge}
+        try:
+            estimates = estimate(cases, args.n, past_calls(sources), models)
+        except (UnknownModel, ValueError) as e:
+            print(f"Cannot estimate: {e}", file=sys.stderr)
+            return 2
+        print(format_estimate(cases, args.n, estimates, sources, limit))
+        return 0
+    if missing := missing_env(args.command):
+        print(
+            f"Missing environment variables: {', '.join(missing)}. "
+            "Set them in .env (see .env.example).",
+            file=sys.stderr,
+        )
+        return 2
+    if warning := few_cases_warning(len(cases)):
+        print(f"Warning: {warning}", file=sys.stderr)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    out_dir = eval_dir / "runs" / stamp
+    prompts = current_prompts()  # before the runs, in case a file changes meanwhile
+    print(f"Eval: {len(cases)} case(s) x n={args.n}, into {out_dir}")
+    run_eval(cases, args.n, chat_model, out_dir, limit)
+    summary = summarize(
+        cases,
+        load_results(out_dir),  # summarize what was saved, nothing else
+        n=args.n,
+        seed=args.seed,
+        cases_dir=args.cases.as_posix(),
+        models={"lawyer": lawyer or "", "judge": judge or ""},
+        prompts=prompts,
+        run_budget_usd=limit,
+    )
+    markdown = summary_markdown(summary)
+    (out_dir / "summary.json").write_text(
+        summary.model_dump_json(indent=2), encoding="utf-8"
+    )
+    (out_dir / "summary.md").write_text(markdown, encoding="utf-8")
+    print(f"\n{markdown}\nSaved to {out_dir}")
+    return 1 if summary.overall.failed else 0
+
+
 def main(
     argv: list[str] | None = None,
     chat_model: ChatModelFactory = anthropic_chat_model,
     runs_dir: Path = Path("runs"),
     cases_dir: Path = Path("cases"),
+    eval_dir: Path = Path("eval"),
 ) -> int:
     args = parse_args(argv)
     load_dotenv()
+    if args.command == "eval":
+        return eval_command(args, chat_model, runs_dir, eval_dir)
     if missing := missing_env(args.command):
         print(
             f"Missing environment variables: {', '.join(missing)}. "

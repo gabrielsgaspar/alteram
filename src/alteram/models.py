@@ -104,6 +104,8 @@ class AgentCall(BaseModel):
     # Summed over attempts, priced from model_reported (see pricing.py).
     # None only in files written before costs were logged.
     cost_usd: float | None = None
+    # Wall time of the model calls, summed over attempts; None in older files.
+    seconds: float | None = None
 
 
 class Run(BaseModel):
@@ -154,6 +156,8 @@ class FailedRun(BaseModel):
     finished_at: datetime
     error: str
     cost_usd: float = 0  # everything spent before the failure, from the budget
+    judge_order: JudgeOrder | None = None  # run only
+    budget_stop: bool = False  # run only: refused by the budget, not a bad answer
     claimant: Argument | None = None
     respondent: Argument | None = None
     calls: dict[str, AgentCall] = Field(default_factory=dict)  # incl. a failed call
@@ -197,3 +201,75 @@ class RejudgeRun(BaseModel):
     source_judges: list[JudgeResult]
     judges: list[JudgeResult]
     summary: RejudgeSummary
+
+
+class Interval(BaseModel):
+    """A point value and its 95% bootstrap interval over cases."""
+
+    value: float
+    low: float
+    high: float
+
+
+class ConfidenceStats(BaseModel):
+    mean: float
+    sd: float | None  # sample SD; None with fewer than two verdicts
+    min: float
+    max: float
+
+
+class EvalFailure(BaseModel):
+    file: str
+    judge_order: JudgeOrder | None
+    budget_stop: bool
+    error: str
+
+
+class CaseStats(BaseModel):
+    case_id: str
+    case_sha256: str
+    kind: Kind
+    expected: Winner
+    runs: int
+    completed: int
+    failed: int
+    budget_stops: int
+    winners: dict[Winner, int]
+    winners_by_order: dict[JudgeOrder, list[Winner]]
+    agreement: float | None  # share of completed runs whose winner is `expected`
+    confidence: ConfidenceStats | None
+    cost_usd: float  # completed and failed runs
+    mean_seconds: dict[str, float]  # per agent, over calls that logged a time
+    retry_rate: dict[str, float]  # per agent: share of calls with a second attempt
+    failures: list[EvalFailure]
+
+
+class OverallStats(BaseModel):
+    cases: int
+    runs: int
+    completed: int
+    failed: int
+    budget_stops: int
+    cases_without_result: int  # no completed run, so left out of accuracy
+    accuracy: Interval | None  # mean over cases of per-case agreement
+    mean_confidence: Interval | None  # mean over cases of per-case mean confidence
+    cost_usd: float
+    cost_per_run_usd: float | None
+    retry_rate: dict[str, float]  # pooled over every call
+    mean_seconds: dict[str, float]  # pooled over every call
+
+
+class EvalSummary(BaseModel):
+    """summary.json of one `alteram eval`; baselines are copies of it."""
+
+    format: Literal[1] = 1
+    created_at: datetime
+    n: int
+    seed: int
+    cases_dir: str
+    models: dict[str, str]  # lawyer, judge: model IDs configured
+    prompts: dict[str, PromptRef]  # claimant, respondent, judge
+    run_budget_usd: float
+    warnings: list[str]
+    overall: OverallStats
+    cases: list[CaseStats]

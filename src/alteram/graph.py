@@ -2,6 +2,7 @@
 
 import operator
 import os
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Annotated, Any, TypedDict
@@ -141,7 +142,7 @@ def _call_agent[T: BaseModel](
     model = chat_model(role, model_id, effort, schema)
     user_text = text
     input_tokens = output_tokens = 0
-    cost = 0.0
+    cost = seconds = 0.0
     retry_error = ""
     call: AgentCall | None = None
     for attempt in (1, 2):
@@ -151,11 +152,13 @@ def _call_agent[T: BaseModel](
             budget.reserve(worst)
         except BudgetExceeded as e:
             raise AgentError(f"{role} not called: {e}", role, call) from e
+        start = time.monotonic()
         try:
             reply = model.invoke([SystemMessage(prompt.text), HumanMessage(user_text)])
         except Exception:
             budget.settle(worst, 0.0)  # a request that failed is not billed
             raise
+        seconds += time.monotonic() - start
         usage: Any = reply.usage_metadata or {}
         model_reported = reply.response_metadata.get("model_name", "")
         # An unknown model raises here, never costs $0; the run then fails.
@@ -180,6 +183,7 @@ def _call_agent[T: BaseModel](
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost_usd=cost,
+            seconds=seconds,
         )
         _require_complete(role, reply, call)
         try:
@@ -318,6 +322,8 @@ def run_case(
                 finished_at=datetime.now(UTC),
                 error=f"{type(e).__name__}: {e}",
                 cost_usd=budget.spent_usd,
+                judge_order=judge_order,
+                budget_stop=isinstance(e.__cause__, BudgetExceeded),
                 claimant=result.get("claimant"),
                 respondent=result.get("respondent"),
                 calls=calls,

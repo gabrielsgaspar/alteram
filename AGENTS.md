@@ -21,6 +21,10 @@ uv sync                                         # install dependencies
 uv run alteram run cases/case-001.md            # run one case
 uv run alteram swap cases/case-001.md           # order-swap check on the judge
 uv run alteram rejudge runs/case-001/<file>.json  # current judge on saved arguments
+uv run alteram eval --dry-run --n 3              # planned calls and cost, no model calls
+uv run alteram eval --n 3                        # whole graph n times per case, vs expected
+uv run alteram eval baseline eval/runs/<stamp>/summary.json  # keep as a baseline
+uv run alteram eval compare <a.json> <b.json>    # differences, with intervals
 uv run pytest                                   # tests (never call the real API)
 uv run ruff check . && uv run ruff format .     # lint and format
 ```
@@ -35,6 +39,7 @@ prompts/         agent prompts as Markdown, one file per agent
 cases/           test cases with numbered paragraphs
 tests/           pytest tests
 runs/            run logs as JSON (gitignored)
+eval/            eval runs (gitignored) and baselines (committed)
 docs/            setup log, ideas, prompt change log
 .claude/skills/  task-specific instructions for Claude Code
 ```
