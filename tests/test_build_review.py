@@ -164,6 +164,17 @@ def test_refuses_with_dirty_tree(repo: Path, br: ModuleType) -> None:
     assert calls(repo) == []
 
 
+def test_summary_cost_includes_final_reviewer(repo: Path, br: ModuleType) -> None:
+    # Smoke run 2 reported only the builder's cost after an approval.
+    script(
+        repo,
+        [{"write": ["work.txt"], "cost": 0.12}],
+        [{"structured_output": APPROVE, "cost": 0.09}],
+    )
+    br.main(["task.md"])
+    assert summary(repo)["cost_usd"] == pytest.approx(0.21)
+
+
 def test_stops_on_approve_and_commits(repo: Path, br: ModuleType) -> None:
     script(repo, [{"write": ["work.txt"]}], [{"structured_output": APPROVE}])
     assert br.main(["task.md", "--loops", "3"]) == 0
@@ -319,6 +330,8 @@ def test_both_agents_run_sandboxed(repo: Path, br: ModuleType) -> None:
         settings = json.loads(flag_values(call["argv"], "--settings")[0])
         assert settings["sandbox"]["enabled"] is True
         assert settings["sandbox"]["allowUnsandboxedCommands"] is False
+        # uv run needs its cache; smoke run 2 failed with a read-only ~/.cache/uv.
+        assert "~/.cache/uv" in settings["sandbox"]["filesystem"]["allowWrite"]
 
 
 @pytest.mark.parametrize(

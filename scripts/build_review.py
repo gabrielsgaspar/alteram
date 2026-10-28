@@ -31,6 +31,8 @@ SANDBOX_SETTINGS = json.dumps(
             "enabled": True,
             "allowUnsandboxedCommands": False,
             "failIfUnavailable": True,
+            # uv run needs to write its cache, or it fails before any check.
+            "filesystem": {"allowWrite": ["~/.cache/uv"]},
         }
     }
 )
@@ -386,7 +388,6 @@ def run_loop(args: argparse.Namespace, summary: Summary, logs: dict[str, Log]) -
     feedback: str | None = None
 
     def remaining() -> float:
-        summary.cost_usd = builder_cost + reviewer_cost
         return args.budget - summary.cost_usd
 
     for n in range(1, args.loops + 1):
@@ -406,6 +407,7 @@ def run_loop(args: argparse.Namespace, summary: Summary, logs: dict[str, Log]) -
         )
         builder_session = call.session_id or builder_session
         builder_cost = max(builder_cost, call.cost)
+        summary.cost_usd = builder_cost + reviewer_cost
         record["builder_cost_usd"] = call.cost
         sha = commit_loop(n, args.task)
         if sha:
@@ -436,6 +438,7 @@ def run_loop(args: argparse.Namespace, summary: Summary, logs: dict[str, Log]) -
             logs["reviewer_raw"],
         )
         reviewer_cost += review.cost
+        summary.cost_usd = builder_cost + reviewer_cost
         verdict = read_verdict(review.result)
         record["reviewer_cost_usd"] = review.cost
         record["review"] = verdict
@@ -446,7 +449,6 @@ def run_loop(args: argparse.Namespace, summary: Summary, logs: dict[str, Log]) -
             return
         feedback = review_feedback(verdict)
 
-    remaining()
     summary.stop_reason = "loops"
 
 
