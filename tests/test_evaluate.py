@@ -21,6 +21,7 @@ from alteram.evaluate import (
     Saved,
     bootstrap_mean,
     compare,
+    estimate,
     load_results,
     paired_bootstrap_diff,
     plan_runs,
@@ -385,6 +386,17 @@ def test_dry_run_never_calls_the_model_factory(
     assert "Hard ceiling (8 runs x $5.00 run budget): $40.00" in out
     assert "Only 4 case(s)" in out and "No model calls were made." in out
     assert not (tmp_path / "e").exists()
+
+
+def test_estimate_reprices_a_dated_model_at_priced_as() -> None:
+    past = call("claimant").model_copy(
+        update={"model_reported": f"{LAWYER_MODEL}-20261001", "priced_as": LAWYER_MODEL}
+    )
+    calls = [("claimant", past), ("respondent", call("respondent"))]
+    calls.append(("judge", call("judge")))
+    models = dict.fromkeys(("claimant", "respondent", "judge"))  # none configured
+    [claimant, *_] = estimate([], 1, calls, models)
+    assert claimant.usd_per_call == pytest.approx(0.022)  # Sonnet, 1000 in, 2000 out
 
 
 def test_dry_run_without_history_uses_the_worst_case(

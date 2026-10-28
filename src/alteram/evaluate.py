@@ -409,7 +409,11 @@ def estimate(
         model = models[role]
         if past:
             per_call = mean(
-                cost_usd(model or c.model_reported, c.input_tokens, c.output_tokens)
+                cost_usd(
+                    model or c.priced_as or c.model_reported,
+                    c.input_tokens,
+                    c.output_tokens,
+                )
                 for c in past
             )
         else:

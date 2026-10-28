@@ -49,6 +49,14 @@ def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
     ) / 1_000_000
 
 
+def priced_model(reported: str, configured: str) -> str:
+    """The model to price a call at: the one that answered, if it has a row.
+
+    APIs may report a dated ID with no row; the configured model stands in for it.
+    If that has no row either, cost_usd raises."""
+    return reported if reported in PRICES else configured
+
+
 def worst_case_usd(model: str, prompt_chars: int, max_tokens: int) -> float:
     """An upper bound on one call: a generous input estimate, full max_tokens out."""
     input_tokens = math.ceil(prompt_chars / CHARS_PER_TOKEN_LOW)

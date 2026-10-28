@@ -101,9 +101,12 @@ class AgentCall(BaseModel):
     thinking: str = ""  # logged only; never passed to another agent
     input_tokens: int  # summed over attempts
     output_tokens: int  # summed over attempts
-    # Summed over attempts, priced from model_reported (see pricing.py).
+    # Summed over attempts, priced from priced_as (see pricing.py).
     # None only in files written before costs were logged.
     cost_usd: float | None = None
+    # Model whose price was used; differs from model_reported when that had no
+    # row in PRICES. Empty in older files.
+    priced_as: str = ""
     # Wall time of the model calls, summed over attempts; None in older files.
     seconds: float | None = None
 

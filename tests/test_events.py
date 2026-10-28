@@ -69,3 +69,9 @@ def test_format_event() -> None:
     assert line.startswith("#1   12:01:03  arguing  claimant_lawyer")
     assert line.endswith("agent_call_finished attempt 1 in=10 out=5 $0.0001")
     assert change.endswith("state_change        arguing -> deciding")
+
+
+def test_format_warning_event_shows_its_message() -> None:
+    log = EventLog("case-x")
+    log.add(draft("arguing", "judge", None, "warning", {"attempt": 1, "message": "m"}))
+    assert format_event(log.events[0]).endswith("warning             m")

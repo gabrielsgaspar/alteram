@@ -10,6 +10,7 @@ from alteram.pricing import (
     BudgetExceeded,
     UnknownModel,
     cost_usd,
+    priced_model,
     run_budget_from_env,
     worst_case_usd,
 )
@@ -28,6 +29,14 @@ def test_unknown_model_raises_instead_of_costing_nothing() -> None:
         cost_usd("claude-opus-5-5-typo", 10, 10)
     with pytest.raises(UnknownModel):
         cost_usd("", 0, 0)  # a reply that reported no model
+
+
+def test_priced_model_falls_back_to_configured_only_when_unpriced() -> None:
+    assert priced_model("claude-opus-5-5", "claude-sonnet-5-5") == "claude-opus-5-5"
+    dated = "claude-sonnet-5-5-20261001"
+    assert priced_model(dated, "claude-sonnet-5-5") == "claude-sonnet-5-5"
+    # Neither priced: the configured one comes back, and cost_usd raises on it.
+    assert priced_model(dated, "claude-unpriced") == "claude-unpriced"
 
 
 def test_price_table_is_dated() -> None:
