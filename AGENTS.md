@@ -8,11 +8,13 @@ Alteram is an AI adjudication system for small disputes. In v0, two lawyer agent
 
 This is a learning project. Clear, small, well-tested code matters more than features. If a change makes the system harder to explain, it is probably the wrong change.
 
-## Current scope: v0
+## Current scope: v1 (milestones M3, M4, M5, then M2)
 
-In scope: case loading, the three agents, the LangGraph graph, the CLI, run logs, the order-swap check, tests and CI.
+In scope: the law library (Postgres with pgvector and keyword search via Docker Compose, Alembic migrations, ingestion), retrieval, the citation checker, research tools for the lawyers, and then the event store, API and console.
 
-Out of scope until the owner says otherwise: retrieval, web search, tools for agents, rebuttal rounds, review panels, databases, cloud deployment, a web front end. If you think one of these is needed, say so and stop; do not build it.
+Out of scope until the owner says otherwise: M6–M11, real users and deployment. If you think one of these is needed, say so and stop; do not build it.
+
+The v1 spec is `docs/ALTERAM_V1_DESIGN.md`. Each milestone's step plan is `docs/milestones/<M>.md`.
 
 ## Commands
 
@@ -51,6 +53,7 @@ docs/            setup log, ideas, prompt change log
 
 - Never read, print, copy or edit `.env`. Read configuration only through environment variables in code.
 - Never put a key, token or password in code, tests, logs, commits or chat.
+- Synthetic data only. No real dispute, document or personal data enters the repo, a prompt or any third-party API until docs/PRIVACY.md and the WSL2 sandbox decision say otherwise.
 - New variables go in `.env.example` with an empty value, and in the table below.
 
 | Variable | Purpose |
@@ -91,7 +94,7 @@ docs/            setup log, ideas, prompt change log
 
 ### Workflow
 
-- Work only in ~/projects/alteram on the Linux filesystem. Never run sessions in /mnt/c; the Windows folder is a read-only mirror for review.
+- Work only on the Linux filesystem, in ~/projects/alteram or a git worktree of it under ~/projects/. Never run sessions in /mnt/c; the Windows folder is a read-only mirror for review.
 - For any change touching more than one file, show a short plan first and wait for approval.
 - Keep commits small, with messages that say what changed and why.
 - When a task is done, report: what changed, how it was tested, and anything you were unsure about.
