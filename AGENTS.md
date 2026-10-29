@@ -91,6 +91,7 @@ docs/            setup log, ideas, prompt change log
 
 ### Workflow
 
+- Work only in ~/projects/alteram on the Linux filesystem. Never run sessions in /mnt/c; the Windows folder is a read-only mirror for review.
 - For any change touching more than one file, show a short plan first and wait for approval.
 - Keep commits small, with messages that say what changed and why.
 - When a task is done, report: what changed, how it was tested, and anything you were unsure about.
