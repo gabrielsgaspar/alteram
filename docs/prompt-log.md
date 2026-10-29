@@ -41,3 +41,20 @@ Results:
 - Cost: $1.43 in total, $0.12 per run (dry-run estimate $1.63).
 
 This closes milestone M1.
+
+## 2026-10-29: baseline with 9 cases (no prompt change)
+
+Baseline: `eval/baselines/20261029T215010Z.json`, from `uv run alteram eval --n 3` (run by Gabriel; 9 cases × 3 = 27 runs, judge order alternating, plan checked against `plan_runs`). It adds cases 005–009 to the M1 baseline (`20261029T185846Z.json`). Later prompt changes are compared against this one.
+
+Setup: same as the M1 baseline. Lawyers `claude-sonnet-5-5`, judge `claude-opus-5-5`. Prompts: claimant v1 `46da619a`, respondent v1 `571c8702`, judge v2 `ec6effdf`. No prompt or code change.
+
+Results:
+- Overall accuracy against `expected`: 89% (24 of 27 runs), 95% interval over cases [67%, 100%].
+- Cases 001–004 (first set): 75% (9 of 12 runs). case-001 claimant 3/3, case-002 claimant 3/3, case-004 respondent 3/3, case-003 claimant 3/3 where undecidable was expected.
+- Cases 005–009 (second Claude-written set): 100% (15 of 15 runs). case-005 respondent 3/3, case-006 claimant 3/3, case-007 respondent 3/3, case-008 undecidable 3/3, case-009 respondent 3/3.
+- case-008 (the cleaner missing-fact design) got `undecidable` in all 3 runs, in both judge orders (mean confidence 0.50). case-003, the other missing-fact case, got `undecidable` in 0 of 3 runs this time (claimant 3/3, mean 0.58), against 1 of 3 in the M1 baseline. So the judge answers `undecidable` when the missing fact is clean, as in case-008, and still misses it in case-003.
+- Runs: 27 completed, 0 failed, 0 budget stops. Retries: 0% for every agent.
+- Cost: $3.04 in total, $0.11 per run. The dry-run estimate of $35.53 was a worst case, because the new worktree had no past calls to price from.
+- `eval compare` against the M1 baseline: the case sets differ (005–009 only in the new one), so intervals use the 4 shared cases. Accuracy on those is 83% → 75%, which is only case-003 (1 of 3 undecidable → 0 of 3). The compare table prints b − a = +0.056 for accuracy, but its interval [−0.250, 0.000] does not contain that figure. The point estimate covers all 9 cases and the interval only the 4 shared ones. Read the interval, not the difference.
+
+Warning: only 9 cases, with 3 runs each. The intervals are wide and cannot support strong claims (the tool warns below 10 cases). Cases 005–009 were also written by Claude and may be easier for a Claude judge than cases written by someone else. The case-008 vs case-003 difference rests on one case each, and does not show which design property causes it.
