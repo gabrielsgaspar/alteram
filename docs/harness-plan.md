@@ -79,3 +79,81 @@ Run from pane 1: `uv run python scripts/build_review.py tasks/<task>.md --loops 
 
 - Should the builder see the reviewer's full output or only `must_fix`? Start with `must_fix` only, to avoid scope creep.
 - One reviewer, or two from different model families (the brief's "reviewers → aggregator")? Start with one; add Codex later as a second reviewer.
+
+## Ship
+
+`scripts/ship.py` takes a task all the way to a merged PR: it runs the build → review loop in a worktree, checks a merge gate in code, pushes, opens or updates the PR, waits for CI and merges. `build_review.py` itself still never pushes or merges; `ship.py` does, and only after the gate passes.
+
+### Usage
+
+```bash
+# New work: the task file must already be on origin/main.
+uv run python scripts/ship.py task tasks/<name>.md [--loops 3] [--budget 5] [--no-merge]
+
+# An existing branch: reviewer first, builder only if the reviewer asks for changes.
+uv run python scripts/ship.py branch <branch> --task tasks/<name>.md [--loops 3] [--budget 5] [--no-merge]
+
+# The same, in a Herdr workspace (or straight in this terminal if Herdr is not running).
+bash scripts/ship-herdr.sh task tasks/<name>.md
+bash scripts/ship-herdr.sh --print task tasks/<name>.md   # only print the herdr commands
+```
+
+- **task mode** creates branch `task/<name>` and worktree `~/projects/alteram-wt/<name>` from `origin/main`, then runs `build_review.py` there.
+- **branch mode** uses the worktree that already has the branch checked out, or creates `~/projects/alteram-wt/<branch, sanitised>`. It first merges `origin/main` into the branch; on a conflict it aborts the merge and stops (exit 3). Then it runs `build_review.py --review-first`.
+- `--loops` and `--budget` cover the whole run, including loops spent fixing CI.
+- The reviewer always sees `git diff origin/main...HEAD`, the whole branch.
+- `ship.py` never switches the branch of the worktree it is launched from. It removes a worktree only if it created it, after copying `.loop/` to `~/projects/.ship/<name>-<stamp>-logs/`.
+- `~/projects/.ship/<name>` is a symlink to the worktree's `.loop/latest`, so log viewers can tail a fixed path. Each run writes `~/projects/.ship/<name>-<UTC stamp>.json`: mode, branch, PR URL, loops, cost, verdict, gate results, CI result, merge SHA and exit code.
+- `gh` and `claude` come from `ALTERAM_GH_BIN` and `ALTERAM_CLAUDE_BIN` (defaults `gh` and `claude`); the tests substitute fakes.
+
+### Guard
+
+`ship.py` refuses (exit 2) if the current directory or a target worktree is under `/mnt`, is not under `~/projects/`, or is not on ext4 (`stat -f -c %T` must say `ext2/ext3`).
+
+### Merge gate
+
+Checked in code after every reviewer approval. All four must pass, or `ship.py` stops before pushing, says why, and exits 3:
+
+1. The final reviewer verdict is `approve` with a non-empty `checked` list.
+2. Every file in `git diff origin/main...HEAD --name-only` matches a backticked path or glob in the task file's `## In scope` section. A pattern ending in `/` is a directory.
+3. No changed file is under `.env*`, `.claude/`, `.github/`, `prompts/`, `cases/`, `pyproject.toml` or `uv.lock`, unless the In-scope list names it explicitly: an exact path or directory, not a glob.
+4. A secret scan of the added lines finds no Anthropic, LangSmith or GitHub token prefix, no PEM block header, and no `KEY=` or `TOKEN=` assignment with a value of 16 or more characters. It reports the file and the kind of match, never the match itself.
+
+### CI and merge
+
+After the gate, `ship.py` runs `git push -u origin HEAD` and creates the PR with the task file's title and a body holding the task file, the reviewer's `checked` list, the loops used and the cost. If a PR already exists, the same goes in a comment instead. It then waits for `gh pr checks --watch --fail-fast`:
+
+- No checks within 3 minutes: exit 3.
+- CI fails and loops remain: the failed log (`gh run view --log-failed`, last 4000 characters) goes to the builder as must-fix, then the gate and reviewer run again and the branch is pushed again. No loops left: exit 3.
+- CI passes: unless `--no-merge`, `gh pr merge --merge --delete-branch` (with `--repo`, so gh does not touch local branches or try to check out `main` inside the worktree). Then, if the launching worktree is on `main` with a clean tree, `git pull --ff-only` there.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Merged, or approved and green with `--no-merge` |
+| 2 | Refused: guard, task file not on `origin/main`, branch or worktree already exists |
+| 3 | Needs you: no approval, merge gate failed, merge conflict, CI failed or never started |
+| 4 | Budget reached |
+
+### Herdr layout
+
+`scripts/ship-herdr.sh` takes the same arguments and creates a Herdr workspace labelled `ship <name>`:
+
+```
+┌──────────────────────┬──────────────────────────────────────────────┐
+│                      │ tail -F ~/projects/.ship/<name>/builder.log  │
+│  ship.py <args>      ├──────────────────────────────────────────────┤
+│                      │ tail -F ~/projects/.ship/<name>/reviewer.log │
+└──────────────────────┴──────────────────────────────────────────────┘
+```
+
+If `herdr` is not installed or no server is running, it says so and runs `ship.py` in the current terminal.
+
+### Trigger from Windows
+
+From PowerShell:
+
+```powershell
+wsl.exe -- bash -lic 'cd ~/projects/alteram && git pull --ff-only && bash scripts/ship-herdr.sh task tasks/<name>.md'
+```

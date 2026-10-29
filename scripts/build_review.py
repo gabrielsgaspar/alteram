@@ -2,6 +2,7 @@
 and a fresh read-only reviewer agent checks the result against the task file.
 
 Usage: uv run python scripts/build_review.py tasks/<task>.md --loops 3
+       ... --review-first   review the branch's existing diff before building
 
 See docs/harness-plan.md. Standard library only. Needs Claude Code v2.1.277+
 (resumed sessions report cumulative cost) and the sandbox (Linux or WSL2).
@@ -131,11 +132,30 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--base", default="main", help="branch the run must not start on"
     )
+    parser.add_argument(
+        "--review-first",
+        action="store_true",
+        help="start with the reviewer; call the builder only if it asks for changes",
+    )
+    parser.add_argument(
+        "--base-ref",
+        help="reviewer sees git diff <base-ref>...HEAD (default with "
+        "--review-first: origin/main; otherwise only this run's commits)",
+    )
+    parser.add_argument(
+        "--feedback",
+        type=Path,
+        help="file of must-fix points for the first builder call",
+    )
     args = parser.parse_args(argv)
     if args.loops < 1:
         parser.error("--loops must be at least 1")
     if args.budget <= 0 or args.call_budget <= 0:
         parser.error("budgets must be positive")
+    if args.review_first and args.feedback:
+        parser.error("--feedback needs the builder first, not --review-first")
+    if args.base_ref is None and args.review_first:
+        args.base_ref = "origin/main"
     return args
 
 
@@ -319,14 +339,18 @@ def read_verdict(result: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
-def builder_prompt(task: Path, feedback: str | None) -> str:
+def builder_prompt(task: Path, feedback: str | None, fresh: bool = False) -> str:
+    """The builder's prompt. A fresh session given feedback also gets the task."""
+    text = task.read_text(encoding="utf-8")
     if feedback is None:
-        text = task.read_text(encoding="utf-8")
         return f"Implement this task. Task file: {task.as_posix()}\n\n{text}"
-    return (
+    fix = (
         "Your previous attempt was checked. Fix the points below and nothing "
         f"else, staying within the task file {task.as_posix()}.\n\n{feedback}"
     )
+    if fresh:
+        return f"Task file: {task.as_posix()}\n\n{text}\n\n{fix}"
+    return fix
 
 
 def review_feedback(verdict: dict[str, Any]) -> str:
@@ -340,16 +364,21 @@ def review_feedback(verdict: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def reviewer_prompt(task: Path, start: str) -> str:
-    """Show only this run's changes: commits since the run started, and any
-    uncommitted ones."""
+def reviewer_prompt(task: Path, start: str, base_ref: str | None = None) -> str:
+    """Show this run's commits (since start), or with base_ref the whole branch
+    (base_ref...HEAD), plus any uncommitted changes."""
     text = task.read_text(encoding="utf-8")
-    committed = git("diff", f"{start}..HEAD")
+    if base_ref:
+        diff_range, title = f"{base_ref}...HEAD", "Changes on this branch"
+    else:
+        diff_range, title = f"{start}..HEAD", "Changes made in this run"
+    committed = git("diff", diff_range)
     uncommitted = git("diff", "HEAD")
+    shown = diff_range if base_ref else f"{start[:7]}..HEAD"
     return (
         f"Task file: {task.as_posix()}\n\n{text}\n\n"
         "The gate (ruff check, ruff format --check, pytest) has passed.\n\n"
-        f"## Changes made in this run (git diff {start[:7]}..HEAD)\n\n"
+        f"## {title} (git diff {shown})\n\n"
         f"```diff\n{committed}```\n\n"
         f"## Uncommitted changes\n\n```diff\n{uncommitted or '(none)'}\n```\n"
     )
@@ -372,7 +401,12 @@ def open_logs(run_dir: Path, latest: Path, name: str) -> tuple[Log, Log]:
 
 def make_run_dir() -> tuple[Path, Path]:
     root = Path(git("rev-parse", "--show-toplevel").strip()) / ".loop"
-    run_dir = root / datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_dir = root / stamp
+    n = 1
+    while run_dir.exists():  # a second run in the same second
+        n += 1
+        run_dir = root / f"{stamp}-{n}"
     latest = root / "latest"
     run_dir.mkdir(parents=True)
     shutil.rmtree(latest, ignore_errors=True)
@@ -386,6 +420,8 @@ def run_loop(args: argparse.Namespace, summary: Summary, logs: dict[str, Log]) -
     builder_cost = 0.0  # latest cumulative total of the resumed builder session
     reviewer_cost = 0.0
     feedback: str | None = None
+    if args.feedback:
+        feedback = args.feedback.read_text(encoding="utf-8")
 
     def remaining() -> float:
         return args.budget - summary.cost_usd
@@ -397,26 +433,29 @@ def run_loop(args: argparse.Namespace, summary: Summary, logs: dict[str, Log]) -
         record: dict[str, Any] = {"loop": n}
         summary.loops.append(record)
 
-        print(f"loop {n}: builder")
-        logs["builder"].write(f"\n===== loop {n} =====\n")
-        call = run_claude(
-            builder_command(builder_session, min(args.call_budget, remaining())),
-            builder_prompt(args.task, feedback),
-            logs["builder"],
-            logs["builder_raw"],
-        )
-        builder_session = call.session_id or builder_session
-        builder_cost = max(builder_cost, call.cost)
-        summary.cost_usd = builder_cost + reviewer_cost
-        record["builder_cost_usd"] = call.cost
-        sha = commit_loop(n, args.task)
-        if sha:
-            summary.commits.append(sha)
-        if not call.ok:
-            subtype = (call.result or {}).get("subtype", "no result")
-            record["error"] = f"builder failed: exit {call.returncode}, {subtype}"
-            summary.stop_reason = "error"
-            return
+        if args.review_first and n == 1:
+            record["builder_skipped"] = True
+        else:
+            print(f"loop {n}: builder")
+            logs["builder"].write(f"\n===== loop {n} =====\n")
+            call = run_claude(
+                builder_command(builder_session, min(args.call_budget, remaining())),
+                builder_prompt(args.task, feedback, fresh=builder_session is None),
+                logs["builder"],
+                logs["builder_raw"],
+            )
+            builder_session = call.session_id or builder_session
+            builder_cost = max(builder_cost, call.cost)
+            summary.cost_usd = builder_cost + reviewer_cost
+            record["builder_cost_usd"] = call.cost
+            sha = commit_loop(n, args.task)
+            if sha:
+                summary.commits.append(sha)
+            if not call.ok:
+                subtype = (call.result or {}).get("subtype", "no result")
+                record["error"] = f"builder failed: exit {call.returncode}, {subtype}"
+                summary.stop_reason = "error"
+                return
 
         print(f"loop {n}: gate")
         passed, gate_output = run_gate()
@@ -433,7 +472,7 @@ def run_loop(args: argparse.Namespace, summary: Summary, logs: dict[str, Log]) -
         logs["reviewer"].write(f"\n===== loop {n} =====\n")
         review = run_claude(
             reviewer_command(min(args.call_budget, remaining())),
-            reviewer_prompt(args.task, start),
+            reviewer_prompt(args.task, start, args.base_ref),
             logs["reviewer"],
             logs["reviewer_raw"],
         )
