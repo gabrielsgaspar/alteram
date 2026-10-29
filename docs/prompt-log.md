@@ -25,3 +25,19 @@ Decision: keep v2 (recommended by Cowork; owner to confirm), with a code fix so 
 Code fix: part labels allowed as optional reasons (commit 58e5b0b)
 
 Method note: comparing judge prompts with `swap` re-runs the lawyers, so lawyer variation is mixed into the comparison. A clean comparison re-judges the same saved arguments under both judge versions (see `docs/IDEAS.md`).
+
+## 2026-10-29: M1 baseline recorded (no prompt change)
+
+Baseline: `eval/baselines/20261029T185846Z.json`, from `uv run alteram eval --n 3` (run by Gabriel; 4 cases × 3 = 12 runs, judge order alternating). Later prompt changes are compared against this with `alteram eval compare`.
+
+Setup: lawyers `claude-sonnet-5-5`, judge `claude-opus-5-5`. Prompts: claimant v1 `46da619a`, respondent v1 `571c8702`, judge v2 `ec6effdf` (with the reasons fix in 58e5b0b).
+
+Results:
+- Accuracy against `expected`: 83%, 95% interval over cases [50%, 100%]. Only 4 cases, so the interval is wide.
+- case-001 claimant 3/3 (0.89), case-002 claimant 3/3 (0.74), case-004 respondent 3/3 (0.87).
+- case-003 (missing-fact, expected undecidable): claimant 2, undecidable 1 (mean 0.58). The two claimant verdicts came one in each order, so there is no order effect. Same weakness as in the v1/v2 swap runs above: the judge does not reliably return `undecidable` when a key fact is missing.
+- Runs: 12 completed, 0 failed, 0 budget stops.
+- Retries: 0% for every agent, compared with 24 of 40 judge calls in the v2 swap runs before 58e5b0b.
+- Cost: $1.43 in total, $0.12 per run (dry-run estimate $1.63).
+
+This closes milestone M1.

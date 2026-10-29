@@ -1,0 +1,233 @@
+{
+  "format": 1,
+  "created_at": "2026-10-29T19:06:59.850699Z",
+  "n": 3,
+  "seed": 0,
+  "cases_dir": "cases",
+  "models": {
+    "lawyer": "claude-sonnet-5-5",
+    "judge": "claude-opus-5-5"
+  },
+  "prompts": {
+    "claimant": {
+      "version": 1,
+      "sha256": "46da619aa77ef0c10bbc4f9b7bb420331611b14d8c0bcad16b8237e24e1ae851"
+    },
+    "respondent": {
+      "version": 1,
+      "sha256": "571c8702c16ab7e8c9e42e6ec83776545c5b89960cae6dcc3fa9a758d6c921a4"
+    },
+    "judge": {
+      "version": 2,
+      "sha256": "ec6effdf16f46abfd7b778ce78511945b7daf0f0e40511cdbd0efd80044c92cb"
+    }
+  },
+  "run_budget_usd": 5.0,
+  "warnings": [
+    "Only 4 case(s): intervals are wide and cannot support strong claims (fewer than 10)."
+  ],
+  "overall": {
+    "cases": 4,
+    "runs": 12,
+    "completed": 12,
+    "failed": 0,
+    "budget_stops": 0,
+    "cases_without_result": 0,
+    "accuracy": {
+      "value": 0.8333333333333334,
+      "low": 0.5,
+      "high": 1.0
+    },
+    "mean_confidence": {
+      "value": 0.77,
+      "low": 0.6516666666666666,
+      "high": 0.8800000000000001
+    },
+    "cost_usd": 1.431402,
+    "cost_per_run_usd": 0.1192835,
+    "retry_rate": {
+      "claimant": 0.0,
+      "respondent": 0.0,
+      "judge": 0.0
+    },
+    "mean_seconds": {
+      "claimant": 16.182065875999495,
+      "respondent": 16.72987994183738,
+      "judge": 22.134004415919964
+    }
+  },
+  "cases": [
+    {
+      "case_id": "case-001",
+      "case_sha256": "eaa1ca6c5aff2aa7f877f4eb22ed7cafbbef23557f81c941551f3980e8f7de13",
+      "kind": "one-sided",
+      "expected": "claimant",
+      "runs": 3,
+      "completed": 3,
+      "failed": 0,
+      "budget_stops": 0,
+      "winners": {
+        "claimant": 3,
+        "respondent": 0,
+        "undecidable": 0
+      },
+      "winners_by_order": {
+        "claimant_first": [
+          "claimant",
+          "claimant"
+        ],
+        "respondent_first": [
+          "claimant"
+        ]
+      },
+      "agreement": 1.0,
+      "confidence": {
+        "mean": 0.8933333333333333,
+        "sd": 0.011547005383792526,
+        "min": 0.88,
+        "max": 0.9
+      },
+      "cost_usd": 0.338564,
+      "mean_seconds": {
+        "claimant": 12.383569383004215,
+        "respondent": 22.38381018733101,
+        "judge": 19.247099057004863
+      },
+      "retry_rate": {
+        "claimant": 0.0,
+        "respondent": 0.0,
+        "judge": 0.0
+      },
+      "failures": []
+    },
+    {
+      "case_id": "case-002",
+      "case_sha256": "58c5a7e282eceb7efed24d9ac3704eb6c23b0f575799fc90efe4b208d1e949ed",
+      "kind": "balanced",
+      "expected": "claimant",
+      "runs": 3,
+      "completed": 3,
+      "failed": 0,
+      "budget_stops": 0,
+      "winners": {
+        "claimant": 3,
+        "respondent": 0,
+        "undecidable": 0
+      },
+      "winners_by_order": {
+        "claimant_first": [
+          "claimant"
+        ],
+        "respondent_first": [
+          "claimant",
+          "claimant"
+        ]
+      },
+      "agreement": 1.0,
+      "confidence": {
+        "mean": 0.74,
+        "sd": 0.010000000000000009,
+        "min": 0.73,
+        "max": 0.75
+      },
+      "cost_usd": 0.368954,
+      "mean_seconds": {
+        "claimant": 17.165006481334178,
+        "respondent": 16.91342255367393,
+        "judge": 21.751749958338525
+      },
+      "retry_rate": {
+        "claimant": 0.0,
+        "respondent": 0.0,
+        "judge": 0.0
+      },
+      "failures": []
+    },
+    {
+      "case_id": "case-003",
+      "case_sha256": "7e84e7fc8e1c58f4885fd6c943f82494f50d916e3c216a524b5c685721fc4339",
+      "kind": "missing-fact",
+      "expected": "undecidable",
+      "runs": 3,
+      "completed": 3,
+      "failed": 0,
+      "budget_stops": 0,
+      "winners": {
+        "claimant": 2,
+        "respondent": 0,
+        "undecidable": 1
+      },
+      "winners_by_order": {
+        "claimant_first": [
+          "claimant",
+          "undecidable"
+        ],
+        "respondent_first": [
+          "claimant"
+        ]
+      },
+      "agreement": 0.3333333333333333,
+      "confidence": {
+        "mean": 0.58,
+        "sd": 0.06928203230275509,
+        "min": 0.5,
+        "max": 0.62
+      },
+      "cost_usd": 0.422208,
+      "mean_seconds": {
+        "claimant": 19.40725519467378,
+        "respondent": 18.45640507400579,
+        "judge": 28.70407983699503
+      },
+      "retry_rate": {
+        "claimant": 0.0,
+        "respondent": 0.0,
+        "judge": 0.0
+      },
+      "failures": []
+    },
+    {
+      "case_id": "case-004",
+      "case_sha256": "7c9d76a9caad64f4994121f9bbb9b3092f2033528196853cb0798eaae4e5df1d",
+      "kind": "one-sided",
+      "expected": "respondent",
+      "runs": 3,
+      "completed": 3,
+      "failed": 0,
+      "budget_stops": 0,
+      "winners": {
+        "claimant": 0,
+        "respondent": 3,
+        "undecidable": 0
+      },
+      "winners_by_order": {
+        "claimant_first": [
+          "respondent"
+        ],
+        "respondent_first": [
+          "respondent",
+          "respondent"
+        ]
+      },
+      "agreement": 1.0,
+      "confidence": {
+        "mean": 0.8666666666666667,
+        "sd": 0.01527525231651948,
+        "min": 0.85,
+        "max": 0.88
+      },
+      "cost_usd": 0.301676,
+      "mean_seconds": {
+        "claimant": 15.772432444985801,
+        "respondent": 9.165881952338774,
+        "judge": 18.83308881134144
+      },
+      "retry_rate": {
+        "claimant": 0.0,
+        "respondent": 0.0,
+        "judge": 0.0
+      },
+      "failures": []
+    }
+  ]
+}
