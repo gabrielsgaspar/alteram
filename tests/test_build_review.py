@@ -353,3 +353,81 @@ def test_review_schema_matches_read_verdict(br: ModuleType) -> None:
     schema = json.loads((br.HARNESS / "review_schema.json").read_text())
     assert schema["properties"]["verdict"]["enum"] == ["approve", "changes"]
     assert set(schema["required"]) == set(APPROVE)
+
+
+def test_review_first_approval_skips_builder(repo: Path, br: ModuleType) -> None:
+    (repo / "earlier.txt").write_text("work already on the branch\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "earlier work")
+    script(repo, [{}], [{"structured_output": APPROVE}])
+    assert br.main(["task.md", "--review-first", "--base-ref", "main"]) == 0
+    assert calls(repo, "builder") == []
+    result = summary(repo)
+    assert result["loops"][0]["builder_skipped"] is True
+    stdin = calls(repo, "reviewer")[0]["stdin"]
+    assert "earlier.txt" in stdin
+    assert "git diff main...HEAD" in stdin
+
+
+def test_review_first_changes_call_the_builder(repo: Path, br: ModuleType) -> None:
+    script(
+        repo,
+        [{"write": ["work.txt"]}],
+        [{"structured_output": CHANGES}, {"structured_output": APPROVE}],
+    )
+    assert br.main(["task.md", "--review-first", "--base-ref", "main"]) == 0
+    builder_calls = calls(repo, "builder")
+    assert len(builder_calls) == 1
+    # A fresh builder session gets the task as well as the must-fix list.
+    assert "work.txt:1 needs fixing" in builder_calls[0]["stdin"]
+    assert "Task file: task.md" in builder_calls[0]["stdin"]
+    assert len(calls(repo, "reviewer")) == 2
+
+
+def test_review_first_defaults_base_ref_to_origin_main(br: ModuleType) -> None:
+    assert br.parse_args(["t.md", "--review-first"]).base_ref == "origin/main"
+    assert br.parse_args(["t.md"]).base_ref is None
+
+
+def test_base_ref_shows_whole_branch_diff(repo: Path, br: ModuleType) -> None:
+    (repo / "earlier.txt").write_text("committed before the run\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "earlier work")
+    script(repo, [{"write": ["work.txt"]}], [{"structured_output": APPROVE}])
+    br.main(["task.md", "--base-ref", "main"])
+    stdin = calls(repo, "reviewer")[0]["stdin"]
+    assert "earlier.txt" in stdin
+    assert "work.txt" in stdin
+
+
+def test_feedback_file_goes_to_first_builder_call(repo: Path, br: ModuleType) -> None:
+    feedback = repo.parent / "ci.txt"
+    feedback.write_text("CI failed: test_x\n")
+    script(repo, [{"write": ["work.txt"]}], [{"structured_output": APPROVE}])
+    assert br.main(["task.md", "--feedback", str(feedback)]) == 0
+    stdin = calls(repo, "builder")[0]["stdin"]
+    assert "CI failed: test_x" in stdin
+    assert "Task file: task.md" in stdin
+
+
+def test_feedback_conflicts_with_review_first(br: ModuleType) -> None:
+    with pytest.raises(SystemExit):
+        br.parse_args(["t.md", "--review-first", "--feedback", "f.txt"])
+
+
+def test_two_runs_in_the_same_second_get_separate_run_dirs(
+    repo: Path, br: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ship.py starts a second run straight after a CI failure.
+    class FixedClock:
+        @staticmethod
+        def now() -> Any:
+            from datetime import datetime
+
+            return datetime(2026, 10, 29, 12, 0, 0)
+
+    monkeypatch.setattr(br, "datetime", FixedClock)
+    first, _ = br.make_run_dir()
+    second, latest = br.make_run_dir()
+    assert first != second
+    assert first.is_dir() and second.is_dir() and latest.is_dir()
