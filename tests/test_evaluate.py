@@ -376,7 +376,11 @@ def test_dry_run_never_calls_the_model_factory(
     runs_dir = tmp_path / "runs"
     past = made_run("case-x", "claimant_first", "claimant", 0.8, 0.10)
     write(runs_dir, "case-x/20261026T000000Z.json", past)
-    argv = ["eval", "--dry-run", "--n", "2", "--cases", str(CASES)]
+    cases_dir = tmp_path / "cases"  # a fixed four, so new cases don't change the counts
+    cases_dir.mkdir()
+    for path in sorted(CASES.glob("*.md"))[:4]:
+        shutil.copy(path, cases_dir)
+    argv = ["eval", "--dry-run", "--n", "2", "--cases", str(cases_dir)]
     assert cli.main(argv, no_model, runs_dir, eval_dir=tmp_path / "e") == 0
     out = capsys.readouterr().out
     assert "4 case(s) x n=2 = 8 runs, 24 model calls" in out
