@@ -20,9 +20,11 @@ Results (`swap --repeats 5`; v1 runs 2026-10-26 21:10–21:22, v2 runs 22:04–2
 - Retries: the old error ("C (requested outcome)") is gone, but a new one replaced it. The judge now also writes reasons for `C-against` and `R-against`, which `check_reason_coverage` rejects as unknown. 24 of 40 v2 judge calls retried, against 4 of 30 in v1. The v2 sentence caused this.
 - Order: no order effect in any case. In case 003 the minority verdicts came only in respondent_first in both versions (4/20 vs 0/20, Fisher p ≈ 0.11): watch, not act.
 
-Decision: keep v2 (recommended by Cowork; owner to confirm), with a code fix so reasons may also cover the four part labels, which are optional and never required. No v3 prompt needed.
+Decision: keep v2 (recommended by Cowork; confirmed by Gabriel 2026-10-29), with a code fix so reasons may also cover the four part labels, which are optional and never required. No v3 prompt needed.
 
 Code fix: part labels allowed as optional reasons (commit 58e5b0b)
+
+Confirmation swap 2026-10-27 (runs/case-002/20261027T222419Z-swap.json): 4/4 judge calls attempts 1, claimant 4/4.
 
 Method note: comparing judge prompts with `swap` re-runs the lawyers, so lawyer variation is mixed into the comparison. A clean comparison re-judges the same saved arguments under both judge versions (see `docs/IDEAS.md`).
 

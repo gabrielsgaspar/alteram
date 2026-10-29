@@ -31,8 +31,8 @@ One checkbox per step in `ALTERAM_SETUP_BRIEF.md` section 8. Tick a step only wh
   - Done 2026-10-26. CLI built ("Add CLI with run logs and order-swap check", tracing forced off in tests); `anthropic` declared in pyproject. One `run` per case plus `swap --repeats 5` on all three. Total cost about $3 from logged tokens. One-sided case won, no order flips, so no prompt change is required by the brief; one judge label defect to fix (see review notes).
 - [x] **10. Continuous integration** — CI green on GitHub
   - Done 2026-10-28. `main` (commit 44184a8) pushed to GitHub; CI run green: https://github.com/gabrielsgaspar/alteram/actions/runs/40666729199.
-- [ ] **11. README** — README on GitHub
-  - Notes:
+- [x] **11. README** — README on GitHub
+  - Done 2026-10-29 (PR from `docs/readme`; on GitHub once merged). Written by Claude Code, not Cowork; also covers `rejudge`, `eval` and the build → review harness, which came after the brief.
 - [ ] **12. Retrospective** — three answers recorded below, next item chosen
   - Notes:
 
@@ -72,6 +72,7 @@ _Cases where the judge disagreed with `expected`, flipped on swap, or let an uns
 - **Possible asymmetry, untestable with these cases.** Respondent points were flagged unsupported far more often than claimant points (case 002: 33 vs 0 across 10 verdicts). But the claimant should win all three cases, so the losing side's stretching and a pro-claimant judge look the same. A case where the respondent should clearly win is needed to tell them apart.
 - **Judge v2 runs, 2026-10-26 22:04–22:13** (commit 5c2c1f7; details in `docs/prompt-log.md`): case-004 went to the respondent 10/10 at confidence 0.90, so the judge does find against a consumer. In case-004 the claimant's points were flagged unsupported far more (25 vs 6). The earlier asymmetry therefore follows the losing side, not the claimant. v2 introduced a new retry cause (reasons for `C-against`/`R-against`, 24 of 40 calls); the fix is in code.
 - **What the swap measures.** With fixed arguments the judge is very stable (case 002: 0.72 on all 10). Run-to-run variation therefore comes mostly from the lawyers, which the swap check doesn't vary.
+- **M1 baseline, 2026-10-29** (`eval/baselines/20261029T185846Z.json`): 83% [50%, 100%], case-003 the only miss (claimant 2, undecidable 1), 0% retries, $0.12 per run.
 
 ## Retrospective
 
