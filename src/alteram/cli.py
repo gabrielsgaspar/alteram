@@ -11,11 +11,14 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
 from alteram.evaluate import (
+    ROLES,
     BaselineError,
+    baseline_estimate,
     compare,
     current_prompts,
     estimate,
     few_cases_warning,
+    format_baseline_estimate,
     format_compare,
     format_estimate,
     load_results,
@@ -335,8 +338,14 @@ def eval_command(
     if args.dry_run:  # no API key needed, and the model factory is never touched
         sources = [runs_dir, eval_dir / "runs"]
         models = {"claimant": lawyer, "respondent": lawyer, "judge": judge}
+        calls = past_calls(sources)
+        no_history = [r for r in ROLES if all(role != r for role, _ in calls)]
+        baselines = eval_dir / "baselines"
+        if no_history and (base := baseline_estimate(baselines, lawyer, judge)):
+            print(format_baseline_estimate(cases, args.n, base, no_history, limit))
+            return 0
         try:
-            estimates = estimate(cases, args.n, past_calls(sources), models)
+            estimates = estimate(cases, args.n, calls, models)
         except (UnknownModel, ValueError) as e:
             print(f"Cannot estimate: {e}", file=sys.stderr)
             return 2

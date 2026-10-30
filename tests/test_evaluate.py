@@ -411,6 +411,60 @@ def test_dry_run_without_history_uses_the_worst_case(
     assert "(worst case: no past calls)" in capsys.readouterr().out
 
 
+def write_baseline(eval_dir: Path, case: Case, models: dict[str, str]) -> Path:
+    summary, _ = summary_pair(case)
+    overall = summary.overall.model_copy(update={"cost_per_run_usd": 0.1125})
+    summary = summary.model_copy(update={"overall": overall, "models": models})
+    path = eval_dir / "baselines" / "20261029T215010Z.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(summary.model_dump_json(), encoding="utf-8")
+    return path
+
+
+def test_dry_run_without_history_uses_the_newest_baseline(
+    tmp_path: Path, case: Case, capsys: pytest.CaptureFixture[str]
+) -> None:
+    eval_dir = tmp_path / "e"
+    path = write_baseline(
+        eval_dir, case, {"lawyer": LAWYER_MODEL, "judge": JUDGE_MODEL}
+    )
+    argv = ["eval", "--dry-run", "--n", "3", "--cases", str(CASES)]
+    assert cli.main(argv, no_model, tmp_path / "runs", eval_dir=eval_dir) == 0
+    out = capsys.readouterr().out
+    runs = 3 * len(list(CASES.glob("*.md")))
+    assert f"from baseline {path.as_posix()}: {runs} runs x $0.1125 per run" in out
+    assert f"= ${runs * 0.1125:.4f}" in out
+    assert "worst case" not in out and "taken from the baseline" not in out
+
+
+def test_dry_run_baseline_supplies_unconfigured_models(
+    tmp_path: Path,
+    case: Case,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv(JUDGE_MODEL_ENV)
+    eval_dir = tmp_path / "e"
+    write_baseline(eval_dir, case, {"lawyer": LAWYER_MODEL, "judge": JUDGE_MODEL})
+    argv = ["eval", "--dry-run", "--cases", str(CASES)]
+    assert cli.main(argv, no_model, tmp_path / "runs", eval_dir=eval_dir) == 0
+    out = capsys.readouterr().out
+    assert f"taken from the baseline: lawyer {LAWYER_MODEL}, judge {JUDGE_MODEL}" in out
+
+
+def test_dry_run_ignores_a_baseline_with_other_models(
+    tmp_path: Path, case: Case, capsys: pytest.CaptureFixture[str]
+) -> None:
+    eval_dir = tmp_path / "e"
+    write_baseline(
+        eval_dir, case, {"lawyer": LAWYER_MODEL, "judge": "claude-fable-5-1"}
+    )
+    argv = ["eval", "--dry-run", "--cases", str(CASES)]
+    assert cli.main(argv, no_model, tmp_path / "runs", eval_dir=eval_dir) == 0
+    out = capsys.readouterr().out
+    assert "(worst case: no past calls)" in out and "baseline" not in out
+
+
 # --- baseline and compare -----------------------------------------------------------
 
 
@@ -446,7 +500,7 @@ def test_compare_shows_the_right_differences(case: Case) -> None:
     a, b = summary_pair(case)
     diffs, notes = compare(a, b, seed=0)
     by_name = {d.metric: d for d in diffs}
-    accuracy = by_name["accuracy"]
+    accuracy = by_name["accuracy (shared, n=2)"]
     assert (accuracy.a, accuracy.b) == (pytest.approx(0.75), pytest.approx(1.0))
     assert accuracy.interval is not None
     assert accuracy.interval.value == pytest.approx(0.25)  # per case: +0.5 and 0
@@ -466,6 +520,50 @@ def test_compare_identical_summaries_has_zero_interval(case: Case) -> None:
     diffs, _ = compare(a, a, seed=0)
     interval = diffs[0].interval
     assert interval is not None and (interval.low, interval.high) == (0.0, 0.0)
+    assert not any("all cases" in d.metric for d in diffs)
+
+
+def with_agreements(template: EvalSummary, agreements: dict[str, float]) -> EvalSummary:
+    """A summary shaped like a baseline, with one agreement per case."""
+    stats = template.cases[0]
+    cases = [
+        stats.model_copy(update={"case_id": k, "agreement": v})
+        for k, v in agreements.items()
+    ]
+    accuracy = bootstrap_mean(list(agreements.values()), seed=0)
+    overall = template.overall.model_copy(
+        update={"cases": len(cases), "accuracy": accuracy}
+    )
+    return template.model_copy(update={"cases": cases, "overall": overall})
+
+
+def test_compare_shared_rows_match_their_intervals(case: Case) -> None:
+    template, _ = summary_pair(case)
+    a = with_agreements(
+        template, {"case-001": 1, "case-002": 1, "case-003": 1 / 3, "case-004": 1}
+    )
+    b = with_agreements(
+        template,
+        {"case-001": 1, "case-002": 1, "case-003": 0, "case-004": 1}
+        | {f"case-00{i}": 1 for i in range(5, 10)},
+    )
+    diffs, notes = compare(a, b, seed=0)
+    by_name = {d.metric: d for d in diffs}
+    shared = by_name["accuracy (shared, n=4)"]
+    assert (shared.a, shared.b) == (pytest.approx(0.8333, abs=1e-3), 0.75)
+    assert shared.interval is not None
+    assert shared.interval.low <= shared.b - shared.a <= shared.interval.high
+    assert shared.b - shared.a == pytest.approx(-0.0833, abs=1e-3)
+    every = by_name["accuracy (all cases)"]
+    assert every.a == pytest.approx(0.8333, abs=1e-3)
+    assert every.b == pytest.approx(0.8889, abs=1e-3)
+    assert every.interval is None
+    assert "mean confidence (all cases)" in by_name
+    assert any("shared rows use shared cases only" in n for n in notes)
+    for d in diffs:
+        if d.interval is not None:
+            assert d.a is not None and d.b is not None
+            assert d.interval.value == pytest.approx(d.b - d.a)
 
 
 def test_compare_warns_about_cases_prompts_and_models(case: Case) -> None:
