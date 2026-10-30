@@ -33,8 +33,8 @@ One checkbox per step in `ALTERAM_SETUP_BRIEF.md` section 8. Tick a step only wh
   - Done 2026-10-28. `main` (commit 44184a8) pushed to GitHub; CI run green: https://github.com/gabrielsgaspar/alteram/actions/runs/40666729199.
 - [x] **11. README** — README on GitHub
   - Done 2026-10-29 (PR from `docs/readme`; on GitHub once merged). Written by Claude Code, not Cowork; also covers `rejudge`, `eval` and the build → review harness, which came after the brief.
-- [ ] **12. Retrospective** — three answers recorded below, next item chosen
-  - Notes:
+- [x] **12. Retrospective** — three answers recorded below, next item chosen
+  - Done 2026-10-30. Answers below; next item is v1.
 
 ## Decisions
 
@@ -47,6 +47,7 @@ One checkbox per step in `ALTERAM_SETUP_BRIEF.md` section 8. Tick a step only wh
 - 2026-10-27: WSL2 (Ubuntu 26.04.1 LTS, WSL 3.0.3.0) and Docker Desktop (4.97.0) installed; development moves to WSL2
 - 2026-10-27: workspace moved to WSL2 at ~/projects/alteram; Windows copy retired.
 - 2026-10-27: Bash sandbox enabled (WSL2, strict mode, `failIfUnavailable`) with OS-level `denyRead` on `.env` paths and `**/.env`; network limited to PyPI and GitHub, write added for `~/.cache/uv`. Verified with a canary file that cat/head/grep/python/uv-run reads fail, and uv sync/lock, ruff, pytest (107 passed), git and gh work sandboxed.
+- 2026-10-30: v0 closed (setup steps 1–12 done). Next: v1 per docs/ALTERAM_V1_DESIGN.md, milestones M3, M4, M5, then M2, design defaults accepted 2026-10-29.
 
 ## Step 9 review notes
 
@@ -76,7 +77,7 @@ _Cases where the judge disagreed with `expected`, flipped on swap, or let an uns
 
 ## Retrospective
 
-- Hardest part:
-- What I'd hand to Claude Code differently:
-- Most surprising result from step 9:
-- Next item from section 10:
+- Hardest part: Keeping one working copy. The repo existed in Windows, in WSL and in a mirror; Claude Code kept running in /mnt/c, which caused mode noise and blocked checkouts; and an rsync --delete wiped the unpushed harness, which had to be recovered from a transcript. Fixed with the WSL rule, the claude guard and a read-only mirror without .git.
+- What I'd hand to Claude Code differently: Start every session with the working directory and a task file with acceptance criteria, and push branches straight away so nothing lives in one copy. Paid API runs happen in my own terminal, because the sandbox blocks the Anthropic API.
+- Most surprising result from step 9: With fixed arguments the judge barely moved (case 002 got 0.72 on all 10 calls), so run-to-run variation comes from the lawyers. Case 003 missed its expected verdict in 8 of 10 calls, yet the judge named the missing job card in all 10: a weakness in how the case was written, not in the judge.
+- Next item from section 10: v1 per docs/ALTERAM_V1_DESIGN.md: M3, M4, M5, then M2; design defaults accepted (decided 2026-10-29).
