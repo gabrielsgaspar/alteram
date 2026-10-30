@@ -428,6 +428,63 @@ def estimate(
     return estimates
 
 
+class BaselineEstimate(NamedTuple):
+    path: Path
+    usd_per_run: float
+    models: dict[str, str]
+    models_from_baseline: bool  # a model was not configured
+
+
+def baseline_estimate(
+    baselines_dir: Path, lawyer: str | None, judge: str | None
+) -> BaselineEstimate | None:
+    """The newest baseline's cost per run, if its models match those configured."""
+    files = sorted(baselines_dir.glob("*.json"))
+    if not files:
+        return None
+    try:
+        summary = load_summary(files[-1])
+    except (OSError, ValidationError):
+        return None
+    per_run = summary.overall.cost_per_run_usd
+    if per_run is None:
+        return None
+    for key, configured in (("lawyer", lawyer), ("judge", judge)):
+        if configured and summary.models.get(key) != configured:
+            return None
+    return BaselineEstimate(files[-1], per_run, summary.models, not (lawyer and judge))
+
+
+def format_baseline_estimate(
+    cases: list[Case],
+    n: int,
+    baseline: BaselineEstimate,
+    no_history: list[str],
+    run_budget_usd: float,
+) -> str:
+    runs = len(cases) * n
+    total = runs * baseline.usd_per_run
+    lines = [
+        "== Eval plan (dry run) ==",
+        f"  {len(cases)} case(s) x n={n} = {runs} runs, "
+        f"{runs * CALLS_PER_RUN} model calls",
+        f"  No past calls for: {', '.join(no_history)}",
+        f"  Estimate from baseline {baseline.path.as_posix()}: {runs} runs x "
+        f"${baseline.usd_per_run:.4f} per run = ${total:.4f}",
+    ]
+    if baseline.models_from_baseline:
+        models = ", ".join(f"{k} {v}" for k, v in baseline.models.items())
+        lines.append(f"  Models not configured, taken from the baseline: {models}")
+    lines.append(
+        f"  Hard ceiling ({runs} runs x ${run_budget_usd:.2f} run budget): "
+        f"${runs * run_budget_usd:.2f}"
+    )
+    if warning := few_cases_warning(len(cases)):
+        lines.append(f"  Warning: {warning}")
+    lines.append("  No model calls were made.")
+    return "\n".join(lines)
+
+
 def format_estimate(
     cases: list[Case],
     n: int,
@@ -487,6 +544,19 @@ def _diff(metric: str, a: float | None, b: float | None) -> MetricDiff:
     return MetricDiff(metric, a, b, None)
 
 
+def _shared_diff(
+    metric: str, a: dict[str, float], b: dict[str, float], seed: int
+) -> MetricDiff:
+    """Means over the cases with a value in both, so b − a matches the interval."""
+    shared = sorted(a.keys() & b.keys())
+    return MetricDiff(
+        f"{metric} (shared, n={len(shared)})",
+        mean(a[k] for k in shared) if shared else None,
+        mean(b[k] for k in shared) if shared else None,
+        paired_bootstrap_diff(a, b, seed),
+    )
+
+
 def compare(
     a: EvalSummary, b: EvalSummary, seed: int
 ) -> tuple[list[MetricDiff], list[str]]:
@@ -497,7 +567,8 @@ def compare(
     if ca.keys() != cb.keys():
         notes.append(
             f"Case sets differ: only in a {sorted(ca.keys() - cb.keys())}, "
-            f"only in b {sorted(cb.keys() - ca.keys())}. Intervals use shared cases."
+            f"only in b {sorted(cb.keys() - ca.keys())}. Intervals and the shared "
+            "rows use shared cases only."
         )
     for k in sorted(ca.keys() & cb.keys()):
         if ca[k].case_sha256 != cb[k].case_sha256:
@@ -516,18 +587,19 @@ def compare(
     conf_b = {k: c.confidence.mean for k, c in cb.items() if c.confidence}
     oa, ob = a.overall, b.overall
     diffs = [
-        MetricDiff(
-            "accuracy",
-            _value(oa.accuracy),
-            _value(ob.accuracy),
-            paired_bootstrap_diff(agree_a, agree_b, seed),
-        ),
-        MetricDiff(
-            "mean confidence",
-            _value(oa.mean_confidence),
-            _value(ob.mean_confidence),
-            paired_bootstrap_diff(conf_a, conf_b, seed),
-        ),
+        _shared_diff("accuracy", agree_a, agree_b, seed),
+        _shared_diff("mean confidence", conf_a, conf_b, seed),
+    ]
+    if ca.keys() != cb.keys():
+        diffs += [
+            _diff("accuracy (all cases)", _value(oa.accuracy), _value(ob.accuracy)),
+            _diff(
+                "mean confidence (all cases)",
+                _value(oa.mean_confidence),
+                _value(ob.mean_confidence),
+            ),
+        ]
+    diffs += [
         _diff("cost per run (USD)", oa.cost_per_run_usd, ob.cost_per_run_usd),
         _diff(
             "failed share",
@@ -562,7 +634,7 @@ def format_compare(diffs: list[MetricDiff], notes: list[str]) -> str:
 
     lines = ["== Eval compare (b - a) =="]
     lines += [f"  Note: {note}" for note in notes]
-    lines.append(f"  {'metric':<28}{'a':>9}{'b':>9}{'b - a':>9}  95% interval")
+    lines.append(f"  {'metric':<32}{'a':>9}{'b':>9}{'b - a':>9}  95% interval")
     for d in diffs:
         delta = None if d.a is None or d.b is None else d.b - d.a
         iv = (
@@ -570,7 +642,7 @@ def format_compare(diffs: list[MetricDiff], notes: list[str]) -> str:
             if d.interval is None
             else f"[{d.interval.low:.3f}, {d.interval.high:.3f}]"
         )
-        lines.append(f"  {d.metric:<28}{num(d.a):>9}{num(d.b):>9}{num(delta):>9}  {iv}")
+        lines.append(f"  {d.metric:<32}{num(d.a):>9}{num(d.b):>9}{num(delta):>9}  {iv}")
     return "\n".join(lines)
 
 
