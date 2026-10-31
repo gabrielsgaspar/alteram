@@ -46,8 +46,12 @@ jobs:
       - name: Fetch sandbox-runtime (pinned) and find apply-seccomp
         run: |
           set -euo pipefail
-          npx --yes "@anthropic-ai/sandbox-runtime@${SRT_VERSION}" --help > /dev/null
-          seccomp="$(find "$(npm config get cache)/_npx" -path "*/@anthropic-ai/sandbox-runtime/vendor/seccomp/x64/apply-seccomp" | head -n1)"
+          # Outside /home/runner: agent-build's Read denies (merged into the
+          # sandbox) hide /home/runner/.*, where npx would cache it.
+          sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/srt
+          npm install --prefix /opt/srt --no-audit --no-fund "@anthropic-ai/sandbox-runtime@${SRT_VERSION}"
+          npx --prefix /opt/srt --no-install srt --help > /dev/null
+          seccomp=/opt/srt/node_modules/@anthropic-ai/sandbox-runtime/vendor/seccomp/x64/apply-seccomp
           test -x "${seccomp}"
           echo "APPLY_SECCOMP=${seccomp}" >> "${GITHUB_ENV}"
           echo "apply-seccomp: ${seccomp}"
@@ -245,7 +249,7 @@ jobs:
           # A planted secret: synthetic, only to prove denyRead holds.
           echo "PROBE_CANARY=not-a-secret" > .env
 
-          srt() { npx --no-install "@anthropic-ai/sandbox-runtime@${SRT_VERSION}" --settings "${settings}" "$@"; }
+          srt() { npx --prefix /opt/srt --no-install srt --settings "${settings}" "$@"; }
           results=""
           fails=0
           # expect: 0 = must succeed, 1 = must fail (an enforcement check).
@@ -295,7 +299,7 @@ jobs:
           scrub_bwrap=(bwrap --new-session --die-with-parent --dev-bind / / --dev /dev --proc /proc --unshare-user --unshare-pid)
           extra "scrub-style bwrap (approx.)" "${scrub_bwrap[@]}" true
           extra "srt inside scrub-style bwrap (pessimistic)" "${scrub_bwrap[@]}" \
-            bash -c "cd '${PWD}' && npx --no-install '@anthropic-ai/sandbox-runtime@${SRT_VERSION}' --settings '${settings}' -c true"
+            bash -c "cd '${PWD}' && npx --prefix /opt/srt --no-install srt --settings '${settings}' -c true"
 
           # Claude Code merges Read deny rules into the sandbox's denyRead
           # (docs: sandboxing, "Paths ... from both sandbox settings and
