@@ -157,3 +157,16 @@ From PowerShell:
 ```powershell
 wsl.exe -- bash -lic 'cd ~/projects/alteram && git pull --ff-only && bash scripts/ship-herdr.sh task tasks/<name>.md'
 ```
+
+## GitHub flow: issue → label → plan comment
+
+A second, GitHub-side entry point. It only plans; it never builds.
+
+1. Someone opens an issue from the **Agent task** template (`.github/ISSUE_TEMPLATE/agent-task.md`). It has the same sections as `tasks/TEMPLATE.md`: Goal, In scope, Out of scope, Done when.
+2. A person with admin or write access adds the `agent-plan` label. Run `bash scripts/create_labels.sh` once to create `agent-plan`, `agent-build` and `needs-human`; it is safe to run again.
+3. `.github/workflows/agent-plan.yml` runs on `issues: labeled` and nothing else. A guard step checks the labelling user's repo permission first and stops if it is not admin or write.
+4. Claude (Opus, read-only: `Read`, `Grep`, `Glob`, and `git log` / `git diff`) reads `AGENTS.md`, the design docs and the issue, and returns a structured result. A later step posts it as **one comment** on the issue: a plan (files, steps, risks, a "Done when" checklist that needs no paid API calls), or a plain statement that the issue is unclear or out of scope under `AGENTS.md`.
+
+The issue text is treated as data, not instructions. The agent cannot post, edit files, or change labels or settings; a plain workflow step posts the comment with the job token (`contents: read`, `issues: write`, `metadata: read`). Because that token is `GITHUB_TOKEN`, the comment does not trigger any other workflow. The workflow only runs once it is on `main`.
+
+How it relates to the local ship tool: the issue comment is advice for a person. Turning an approved plan into work is still local. Copy it into `tasks/<name>.md` and run `scripts/ship.py` (or `ship-herdr.sh`) as described in [Ship](#ship). The `agent-build` and `needs-human` labels exist for that later step; nothing in GitHub reads them yet.
