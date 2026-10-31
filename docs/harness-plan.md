@@ -157,3 +157,16 @@ From PowerShell:
 ```powershell
 wsl.exe -- bash -lic 'cd ~/projects/alteram && git pull --ff-only && bash scripts/ship-herdr.sh task tasks/<name>.md'
 ```
+
+## GitHub flow: issue → label → plan comment
+
+A second, GitHub-side entry point. It only plans; it never builds.
+
+1. Someone opens an issue from the **Agent task** template (`.github/ISSUE_TEMPLATE/agent-task.md`). It has the same sections as `tasks/TEMPLATE.md`: Goal, In scope, Out of scope, Done when.
+2. A person with admin or write access adds the `agent-plan` label. Run `bash scripts/create_labels.sh` once to create `agent-plan`, `agent-build` and `needs-human`; it is safe to run again.
+3. `.github/workflows/agent-plan.yml` runs on `issues: labeled` and nothing else. A guard step checks the repo permission of both the labelling user and the issue author first, and stops if either is not admin or write, or if the lookup fails.
+4. Claude (Opus, read-only: `Read`, `Grep`, `Glob`, and `git log`) reads `AGENTS.md`, the design docs and the issue, and returns a structured result. A later step posts it as **one comment** on the issue: a plan (files, steps, risks, a "Done when" checklist that needs no paid API calls), or a plain statement that the issue is unclear or out of scope under `AGENTS.md`. Before posting, that step refuses to continue if the comment contains either token value or a `sk-ant-`, `ghp_`, `ghs_` or `github_pat_` string.
+
+The issue text is treated as data, not instructions. Reads are fenced to the checkout: `permissions.blockReadsOutsideWorkingDirectories` is on for `Read`, `Grep` and `Glob`, and deny rules cover `/proc`, `/etc`, `/root`, `/tmp` and the runner's `/home/runner` credential and temp paths. `git diff` is not allowed, because it reads a file outside the repo when given such a path (with or without `--no-index`); use `git log -p`. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` strips credentials from Bash subprocesses, but not from the Claude process itself. Bash deny rules are not a security boundary. The agent cannot post, edit files, or change labels or settings; a plain workflow step posts the comment with the job token (`contents: read`, `issues: write`). Because that token is `GITHUB_TOKEN`, the comment does not trigger any other workflow. The workflow only runs once it is on `main`.
+
+How it relates to the local ship tool: the issue comment is advice for a person. Turning an approved plan into work is still local. Copy it into `tasks/<name>.md` and run `scripts/ship.py` (or `ship-herdr.sh`) as described in [Ship](#ship). The `agent-build` and `needs-human` labels exist for that later step; nothing in GitHub reads them yet.
