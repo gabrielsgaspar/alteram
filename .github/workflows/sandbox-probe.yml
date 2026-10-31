@@ -1,0 +1,288 @@
+name: Sandbox probe
+
+# Finds a runner setup where Claude Code's Bash sandbox works, nested user
+# namespace included (apply-seccomp, and the PID namespace that
+# CLAUDE_CODE_SUBPROCESS_ENV_SCRUB uses). Runs commands through the sandbox
+# runtime Claude Code is built on (@anthropic-ai/sandbox-runtime, CLI `srt`)
+# with the filesystem and network rules of .claude/settings.json plus
+# agent-build's deniedDomains. No secrets, no Claude, no write token.
+on:
+  push:
+    branches: ["probe/**"]
+
+permissions:
+  contents: read
+
+env:
+  SRT_VERSION: 0.0.81
+  UV_CACHE_DIR: /home/runner/.cache/uv
+
+jobs:
+  probe:
+    name: ${{ matrix.os }} / ${{ matrix.setup }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-26.04]
+        # none            install packages only
+        # bwrap-profile   + the documented AppArmor profile for /usr/bin/bwrap
+        # sysctl          + kernel.apparmor_restrict_unprivileged_userns=0 only
+        # profiles        + bwrap profile and a userns profile for srt's apply-seccomp
+        # replace         + Ubuntu's bwrap-userns-restrict swapped for the two
+        #                   profiles above (restriction sysctl stays on)
+        # agent-build     the agent-build step, verbatim (a, then b, then c)
+        setup: [none, bwrap-profile, sysctl, profiles, replace, agent-build]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Fetch sandbox-runtime (pinned) and find apply-seccomp
+        run: |
+          set -euo pipefail
+          npx --yes "@anthropic-ai/sandbox-runtime@${SRT_VERSION}" --help > /dev/null
+          seccomp="$(find "$(npm config get cache)/_npx" -path "*/@anthropic-ai/sandbox-runtime/vendor/seccomp/x64/apply-seccomp" | head -n1)"
+          test -x "${seccomp}"
+          echo "APPLY_SECCOMP=${seccomp}" >> "${GITHUB_ENV}"
+          echo "apply-seccomp: ${seccomp}"
+
+      - name: Base packages (ripgrep for srt's denyRead globs; Claude Code bundles its own)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap socat ripgrep
+
+      - name: Setup variant ${{ matrix.setup }}
+        if: matrix.setup != 'agent-build' && matrix.setup != 'none'
+        env:
+          SETUP: ${{ matrix.setup }}
+        run: |
+          set -euo pipefail
+          restrict="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
+          echo "restriction before: ${restrict}"
+          bwrap_profile() {
+            sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          profile bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+            include if exists <local/bwrap>
+          }
+          EOF
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          }
+          seccomp_profile() {
+            sudo tee /etc/apparmor.d/srt-apply-seccomp > /dev/null <<EOF
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          profile srt-apply-seccomp ${APPLY_SECCOMP} flags=(unconfined) {
+            userns,
+          }
+          EOF
+            sudo apparmor_parser -r /etc/apparmor.d/srt-apply-seccomp
+          }
+          if [ "${restrict}" = "absent" ] || ! command -v apparmor_parser > /dev/null; then
+            echo "No AppArmor userns restriction on this runner; nothing to do."
+            exit 0
+          fi
+          case "${SETUP}" in
+            bwrap-profile) bwrap_profile ;;
+            sysctl) sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 ;;
+            profiles) bwrap_profile; seccomp_profile ;;
+            replace)
+              if [ -f /etc/apparmor.d/bwrap-userns-restrict ]; then
+                sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict || true
+                sudo ln -sf /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/
+              fi
+              bwrap_profile; seccomp_profile ;;
+            *) echo "unknown setup ${SETUP}"; exit 1 ;;
+          esac
+
+      # The agent-build step, copied verbatim (lines 163-241 of
+      # agent-build.yml). continue-on-error so the probe still reports.
+      - name: Install sandbox dependencies (bubblewrap, socat)
+        if: matrix.setup == 'agent-build'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap socat
+
+          sandbox_err="${RUNNER_TEMP}/sandbox.err"
+          failed=""
+          # Outer: the user namespace bwrap makes for every sandboxed command.
+          bwrap_ok() {
+            bwrap --ro-bind / / --proc /proc --dev /dev --unshare-user --unshare-pid true 2> "${sandbox_err}"
+          }
+          # Nested: what apply-seccomp does inside that sandbox. unshare with
+          # --map-current-user writes setgroups "deny" and an identity uid/gid
+          # map (needs CAP_SYS_ADMIN in the new namespace), then makes new PID
+          # and mount namespaces, as the helper does.
+          nested_ok() {
+            bwrap --ro-bind / / --proc /proc --dev /dev --unshare-user --unshare-pid --unshare-net --cap-drop ALL \
+              unshare --user --map-current-user --pid --mount --fork true 2> "${sandbox_err}"
+          }
+          sandbox_ok() {
+            failed="outer"
+            bwrap_ok || return 1
+            failed="nested"
+            nested_ok || return 1
+            failed=""
+          }
+          write_bwrap_profile() {
+            sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          profile bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+            include if exists <local/bwrap>
+          }
+          EOF
+          }
+
+          restrict="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
+          echo "kernel.apparmor_restrict_unprivileged_userns: ${restrict}"
+
+          # a.
+          if ! bwrap_ok && [ "${restrict}" = "1" ]; then
+            echo "bwrap failed; adding the AppArmor profile for /usr/bin/bwrap."
+            write_bwrap_profile
+            sudo systemctl reload apparmor
+          fi
+
+          # b.
+          if ! sandbox_ok && [ "${restrict}" = "1" ]; then
+            echo "The ${failed} user namespace check fails; turning the user namespace restriction off (ephemeral runner)."
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+          # c.
+          if ! sandbox_ok && sudo grep -q '^unpriv_bwrap ' /sys/kernel/security/apparmor/profiles; then
+            echo "The ${failed} user namespace check still fails and unpriv_bwrap is loaded; replacing bwrap-userns-restrict with the documented bwrap profile (ephemeral runner)."
+            if [ -f /etc/apparmor.d/bwrap-userns-restrict ]; then
+              sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict
+              sudo ln -sf /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/
+            fi
+            write_bwrap_profile
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          fi
+
+          if ! sandbox_ok; then
+            echo "Restriction now: $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
+            echo "AppArmor label of a command bwrap starts: $(bwrap --ro-bind / / --proc /proc --dev /dev --unshare-user --unshare-pid cat /proc/self/attr/current 2>/dev/null || echo unknown)"
+            echo "Loaded AppArmor profiles with bwrap in the name:"
+            sudo grep -i bwrap /sys/kernel/security/apparmor/profiles || echo "  none"
+            if [ "${failed}" = "outer" ]; then
+              echo "::error::bubblewrap cannot create its user namespace, so the Claude Code sandbox cannot start. bwrap said: $(< "${sandbox_err}")"
+            else
+              echo "::error::The sandbox's nested user namespace gets no capabilities, so apply-seccomp would fail every sandboxed Bash command (write /proc/self/setgroups). unshare said: $(< "${sandbox_err}")"
+            fi
+            exit 1
+          fi
+          echo "bubblewrap and the nested user namespace work."
+
+      # Same uv setup as agent-build: Python and dependencies outside the
+      # sandbox, cache in ~/.cache/uv.
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          enable-cache: false
+          cache-local-path: /home/runner/.cache/uv
+      - run: uv sync --locked
+
+      - name: Diagnostics
+        run: |
+          set +e
+          echo "kernel: $(uname -r)"
+          . /etc/os-release; echo "os: ${PRETTY_NAME}"
+          echo "bwrap: $(bwrap --version 2>&1)"
+          echo "AppArmor enabled: $(cat /sys/module/apparmor/parameters/enabled 2>/dev/null || echo absent)"
+          sudo aa-status 2>/dev/null | head -n 4
+          echo "kernel.apparmor_restrict_unprivileged_userns: $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
+          echo "kernel.apparmor_restrict_unprivileged_unconfined: $(sysctl -n kernel.apparmor_restrict_unprivileged_unconfined 2>/dev/null || echo absent)"
+          echo "kernel.unprivileged_userns_clone: $(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || echo absent)"
+          echo "user.max_user_namespaces: $(sysctl -n user.max_user_namespaces 2>/dev/null || echo absent)"
+          echo "Loaded profiles mentioning bwrap or userns or seccomp:"
+          sudo grep -i -E 'bwrap|userns|seccomp' /sys/kernel/security/apparmor/profiles || echo "  none"
+          echo "Label inside bwrap: $(bwrap --ro-bind / / --proc /proc --dev /dev --unshare-user --unshare-pid cat /proc/self/attr/current 2>&1)"
+
+      - name: Probe through srt ${{ env.SRT_VERSION }}
+        env:
+          OS: ${{ matrix.os }}
+          SETUP: ${{ matrix.setup }}
+        run: |
+          set -uo pipefail
+          settings="${RUNNER_TEMP}/srt-settings.json"
+          # .claude/settings.json's sandbox rules, plus the working directory
+          # (Claude Code adds it to allowWrite) and agent-build's deniedDomains.
+          cat > "${settings}" <<'EOF'
+          {
+            "filesystem": {
+              "denyRead": ["./.env", "./.env.local", "./.env.production", "./**/.env"],
+              "allowWrite": [".", "~/.cache/uv"]
+            },
+            "network": {
+              "allowedDomains": ["pypi.org", "files.pythonhosted.org", "github.com", "api.github.com"],
+              "deniedDomains": ["github.com", "api.github.com"]
+            }
+          }
+          EOF
+          # A planted secret: synthetic, only to prove denyRead holds.
+          echo "PROBE_CANARY=not-a-secret" > .env
+
+          srt() { npx --no-install "@anthropic-ai/sandbox-runtime@${SRT_VERSION}" --settings "${settings}" "$@"; }
+          results=""
+          fails=0
+          # expect: 0 = must succeed, 1 = must fail (an enforcement check).
+          check() {
+            local label="$1" expect="$2" cmd="$3" out rc verdict
+            out="$(srt -c "${cmd}" 2>&1)"; rc=$?
+            if { [ "${expect}" = 0 ] && [ "${rc}" = 0 ]; } || { [ "${expect}" = 1 ] && [ "${rc}" != 0 ]; }; then
+              verdict=pass
+            else
+              verdict=FAIL; fails=$((fails + 1))
+            fi
+            echo "::group::${label}: ${verdict} (exit ${rc})"
+            printf '%s\n' "${out}" | tail -n 15
+            echo "::endgroup::"
+            echo "RESULT|${OS}|${SETUP}|${label}|${verdict}|${rc}"
+            results="${results}| ${label} | ${verdict} | ${rc} |"$'\n'
+          }
+
+          check "true" 0 "true"
+          check "git status" 0 "git status --short"
+          check "uv --version" 0 "uv --version"
+          check "enforced: .env unreadable" 1 "cat .env"
+          check "enforced: github.com denied" 1 "curl -sS --max-time 10 -o /dev/null https://github.com"
+          check "enforced: no nested userns" 1 "unshare --user true"
+          check "pypi.org reachable" 0 "curl -sS --max-time 10 -o /dev/null https://pypi.org/simple/"
+          check "uv run python (extra)" 0 "uv run --locked python -c 'import alteram, sys; print(sys.version)'"
+
+          # Emulation of the scrub's PID namespace from an unconfined process
+          # outside the sandbox (as Claude Code's own process would be).
+          if unshare --user --map-current-user --pid --mount --fork --mount-proc true 2> "${RUNNER_TEMP}/scrub.err"; then v=pass; else v=FAIL; fi
+          echo "RESULT|${OS}|${SETUP}|scrub-pidns emulation (outside srt)|${v}|-"
+          [ "${v}" = pass ] || cat "${RUNNER_TEMP}/scrub.err"
+          results="${results}| scrub-pidns emulation (outside srt) | ${v} | - |"$'\n'
+
+          if [ "${fails}" != 0 ]; then
+            echo "::group::srt --debug true"
+            srt --debug -c true 2>&1 | tail -n 40
+            echo "::endgroup::"
+          fi
+          {
+            echo "### ${OS} / ${SETUP}"
+            echo "| check | result | exit |"
+            echo "| --- | --- | --- |"
+            printf '%s' "${results}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          rm -f .env
+          exit $(( fails > 0 ))
