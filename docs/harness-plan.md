@@ -237,7 +237,7 @@ The job token Claude can see is read-only on a public repo. Anything Claude comm
 - **Verdict rules, applied in code.** The path check's problems are added to `must_fix`. The result is `approve` only if the model said `approve`, `checked` has every Done when id, none is `not_met`, and `must_fix` is empty. Otherwise it is `changes`, and the comment says why it was overruled. The prompt also tells Claude to put files outside the plan and any clear correctness or quality problem in `must_fix`, even when every item is verified. `not_verifiable_without_running_code` does not block an approval; the comment shows it.
 - **Secret check.** The step that builds the comment holds both token values and runs no git. It refuses the comment if either value or a token prefix (`sk-ant-`, `lsv2_`, `gh[pousr]_`, `github_pat_`, `-----BEGIN`) is in it.
 
-**post** (`issues: write` for one comment and our labels, since PRs are issues; `pull-requests: read` to re-read the head):
+**post** (`issues: write` and `pull-requests: write`: one comment and our labels on the PR, which returned HTTP 403 with `issues: write` alone, and re-reading the head; no `contents: write`, so it cannot merge):
 - **After the review:** it posts one comment with `GITHUB_TOKEN`, as github-actions[bot]: the verdict, the reviewed commit, the Done when table, Must fix and Nice to have. It adds `agent-approved` or `needs-human` and removes the other.
 - **After a failure past the guard** (CI failed, the plan or diff could not be read, an unusable result): a short "stopped" comment and `needs-human`.
 - **After a failed guard on a matched PR** (for example a push by someone other than the App): it only removes `agent-approved`, with no comment.

@@ -660,12 +660,19 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     # GITHUB_TOKEN, which posts as github-actions[bot] and starts no
-    # workflows. Neither scope can create a review (that needs pull-requests
-    # write) or merge (that needs contents write).
+    # workflows. The docs list Issues write or Pull requests write as enough
+    # for the comment and label endpoints (POST .../issues/{n}/comments,
+    # POST and DELETE .../issues/{n}/labels), but run 41246913312 got HTTP 403
+    # "Resource not accessible by integration" on the comment with issues:
+    # write alone, so this job has both.
+    # No merge: that needs contents: write (PUT .../pulls/{n}/merge), and this
+    # job has no contents scope. No approval: pull-requests: write can reach
+    # the review endpoints, but the repo setting "Allow GitHub Actions to
+    # create and approve pull requests" is off, so this token cannot approve.
     # https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps
     permissions:
       issues: write # one comment, and adding or removing our labels (PRs are issues)
-      pull-requests: read # read the PR's head before posting
+      pull-requests: write # the same calls on a PR, which 403 with issues: write alone; also reads the PR's head
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR: ${{ needs.review.outputs.pr }}
