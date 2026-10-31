@@ -13,3 +13,4 @@ label() {
 label agent-plan "Ask the planner agent for a plan comment on this issue (read-only)" 1d76db
 label agent-build "Ready for an agent to build; a human has approved the plan" 0e8a16
 label needs-human "An agent stopped or is unsure; a person must decide" d93f0b
+label agent-approved "The agent reviewer found nothing to fix on the current commit; a person still reviews and merges" 5319e7
