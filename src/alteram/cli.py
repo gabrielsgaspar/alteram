@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 from datetime import UTC, datetime
+from importlib.metadata import version
 from pathlib import Path
 from typing import get_args
 
@@ -223,6 +224,9 @@ def print_run(run: Run) -> None:
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="alteram")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {version('alteram')}"
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run", help="run both lawyers and the judge on a case")
     run.add_argument("case", type=Path)
