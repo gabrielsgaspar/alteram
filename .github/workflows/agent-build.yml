@@ -16,8 +16,9 @@ name: Agent build
 # Nothing here merges, force-pushes or uses id-token. No step that runs git
 # (or anything else) in a checkout Claude's code has touched holds a secret,
 # and git there always runs with fsmonitor and hooks off and never recurses
-# into submodules. Caching is off in every job, so nothing here writes to the
-# uv cache that CI reads.
+# into submodules. Caching is off in every job, so no step here saves the uv
+# cache that CI reads; code under pytest in verify still could (see
+# docs/harness-plan.md, "Cache").
 on:
   issues:
     types: [labeled]
@@ -180,7 +181,8 @@ jobs:
       #    issue-triggered jobs share main's cache scope, which ci.yml
       #    restores from, so a cache saved here could poison CI. (The cache
       #    dir also has to be ~/.cache/uv.) With enable-cache false,
-      #    setup-uv's post step does nothing.
+      #    setup-uv's post step does nothing. This does not stop code under
+      #    pytest in verify from saving a cache itself; see docs/harness-plan.md.
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: false
@@ -379,16 +381,17 @@ jobs:
           if awk '$1 == "160000" { found = 1 } END { exit !found }' <<< "${staged}"; then
             fail "The index holds a gitlink (submodule). Submodules are not allowed."
           fi
-          shas="$(g rev-list "${BASE_SHA}..HEAD")"
+          shas="$(g rev-list --reverse "${BASE_SHA}..HEAD")"
           for sha in ${shas}; do
             tree="$(g ls-tree -r --full-tree "${sha}")"
             if awk '$1 == "160000" { found = 1 } END { exit !found }' <<< "${tree}"; then
               fail "Commit ${sha:0:12} holds a gitlink (submodule). Submodules are not allowed."
             fi
+            # First-parent diff: plain diff-tree (and git log) list nothing for a merge.
+            if [ -n "$(g diff-tree -r --root --no-commit-id --name-only --no-renames --diff-merges=first-parent "${sha}" -- .gitmodules)" ]; then
+              fail "Commit ${sha:0:12} changes .gitmodules. Submodules are not allowed."
+            fi
           done
-          if [ -n "$(g log --format= --name-only --no-renames --ignore-submodules=all "${BASE_SHA}..HEAD" -- .gitmodules)" ]; then
-            fail "The commits change .gitmodules. Submodules are not allowed."
-          fi
           [ -z "$(g status --porcelain --ignore-submodules=all)" ] || fail "The builder left uncommitted changes."
           count="$(g rev-list --count "${BASE_SHA}..HEAD")"
           [ "${count}" -gt 0 ] || fail "The builder made no commits."
@@ -429,7 +432,7 @@ jobs:
     permissions:
       contents: read # check out the repo
     outputs:
-      reason: ${{ steps.load.outputs.reason || steps.paths.outputs.reason || steps.secrets.outputs.reason || steps.checks.outputs.reason }}
+      reason: ${{ steps.load.outputs.reason || steps.secrets.outputs.reason || steps.paths.outputs.reason || steps.checks.outputs.reason }}
       head_sha: ${{ steps.load.outputs.head_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -461,17 +464,133 @@ jobs:
           g merge-base --is-ancestor "${BASE_SHA}" HEAD || fail "The branch does not start from main."
           echo "head_sha=$(g rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
 
-      # Every changed path must be listed under the plan's "Files to change":
-      # an exact path, or a directory ending in `/`. Globs do not count.
-      # Anything under .github/, .claude/, prompts/ or cases/, and
-      # pyproject.toml and uv.lock, needs its exact file path; a directory
-      # entry never unlocks them. No file whose name starts with `.env` is
-      # allowed, except `.env.example` (which follows the normal rule).
-      # Gitlinks (mode 160000) in any commit and changes to .gitmodules are
-      # refused. Renames count on both sides. Binary changes are refused,
-      # since they cannot be scanned. Paths are printed JSON-quoted, so no
-      # path can inject a workflow command or an output line.
-      - name: Check changed paths against the plan
+      # Every check here runs on every commit from main to the branch head,
+      # one at a time, never only on the net diff: publish pushes all the
+      # commits, so a change made in one commit and undone in a later one
+      # still reaches GitHub. A merge commit is read against its first
+      # parent (plain diff-tree lists nothing for a merge).
+      #
+      # The secret scan runs first, so that no later step prints a file name
+      # that holds a token. Per commit it scans:
+      # - the raw commit object: author, committer, any other header and the
+      #   message. A commit with an `encoding` header or a NUL byte is
+      #   refused, since either could hide a match (a UTF-16 message, say);
+      # - every changed file name;
+      # - every added line of the commit's patch, made with `--text`, so a
+      #   binary file or a `-diff` attribute in .gitattributes cannot hide
+      #   content.
+      # Same patterns as ship.py plus the other GitHub token prefixes.
+      # `sk-ant-` covers Anthropic API keys and Claude Code OAuth tokens
+      # (sk-ant-oat...). The patch parser tracks hunks: `+++ ` is a file
+      # header only before a file's first `@@`, so an added line that starts
+      # with `++` is still scanned. Output is read as bytes and split on \n
+      # only, so a \r in a line cannot fake a header. Reports the commit, the
+      # file (unless its name matches) and the kind of match, never the
+      # match. No token values are in this job, so this is a pattern scan
+      # only; build compared the values.
+      - name: Scan every commit's metadata, file names and added lines for secrets
+        id: secrets
+        env:
+          BASE_SHA: ${{ needs.build.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          python3 -I - <<'EOF'
+          import json, os, re, subprocess, sys
+
+          PATTERNS = [
+              ("Anthropic key or OAuth token prefix", re.compile(r"sk-ant-")),
+              ("LangSmith key prefix", re.compile(r"lsv2_")),
+              ("GitHub token prefix", re.compile(r"gh[pousr]_")),
+              ("GitHub fine-grained token prefix", re.compile(r"github_pat_")),
+              ("PEM block", re.compile(r"-----BEGIN")),
+              ("KEY= or TOKEN= assignment with a long value", re.compile(r"(?:KEY|TOKEN)\s*=\s*['\"]?[^\s'\"]{16,}")),
+          ]
+
+
+          def git_bytes(*args):
+              cmd = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "submodule.recurse=false", *args]
+              return subprocess.run(cmd, check=True, capture_output=True).stdout
+
+
+          def git(*args):
+              return git_bytes(*args).decode("utf-8", "replace")
+
+
+          def added_lines(patch):
+              path, in_hunk = "?", False
+              for line in patch.split("\n"):
+                  if line.startswith("diff --git "):
+                      path, in_hunk = "?", False
+                  elif not in_hunk:
+                      if line.startswith("+++ "):
+                          path = line[4:].removeprefix("b/")
+                      elif line.startswith("@@"):
+                          in_hunk = True
+                  elif line.startswith("+"):
+                      yield path, line[1:]
+
+
+          def matches(text):
+              return [label for label, pattern in PATTERNS if pattern.search(text)]
+
+
+          def shown(path):
+              return "a file whose name matches a pattern" if matches(path) else json.dumps(path)
+
+
+          base = os.environ["BASE_SHA"]
+          problems = []
+          for sha in git("rev-list", "--reverse", f"{base}..HEAD").split():
+              short = sha[:12]
+              raw = git_bytes("cat-file", "commit", sha)
+              headers, _, message = raw.decode("utf-8", "replace").partition("\n\n")
+              # An encoding header (UTF-16, UTF-7, ...) or a NUL byte would let
+              # a message hide a match from this byte scan.
+              if b"\0" in raw or any(h.startswith("encoding ") for h in headers.split("\n")):
+                  problems.append(f"commit {short} has an encoding header or a NUL byte, so it cannot be scanned")
+              for label in matches(headers):
+                  problems.append(f"commit {short} header (author, committer or other) matches {label}")
+              for label in matches(message):
+                  problems.append(f"commit {short} message matches {label}")
+              names = git(
+                  "diff-tree", "-r", "--root", "--no-commit-id", "--name-only", "-z",
+                  "--no-renames", "--diff-merges=first-parent", sha,
+              )
+              for name in names.split("\0"):
+                  for label in matches(name):
+                      problems.append(f"commit {short}: a changed file name matches {label}")
+              patch = git(
+                  "show", "--format=", "--patch", "--text", "--diff-merges=first-parent", "--no-color",
+                  "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all",
+                  "--unified=0", sha,
+              )
+              for path, line in added_lines(patch):
+                  for label in matches(line):
+                      problems.append(f"commit {short} {shown(path)}: added line matches {label}")
+          problems = list(dict.fromkeys(problems))
+          if problems:
+              for problem in problems:
+                  print(f"::error::{problem}")
+              reason = "The secret scan found possible secrets: " + "; ".join(problems)
+              with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+                  out.write("reason=" + reason[:1500] + "\n")
+              sys.exit(1)
+          print("No secret patterns in any commit's metadata, file names or added lines.")
+          EOF
+
+      # Every path any commit changes must be listed under the plan's "Files
+      # to change": an exact path, or a directory ending in `/`. Globs do not
+      # count. Anything under .github/, .claude/, prompts/ or cases/,
+      # pyproject.toml and uv.lock, and any .gitattributes (it can change how
+      # git shows a file), need their exact file path; a directory entry
+      # never unlocks them. No file whose name starts with `.env` is allowed,
+      # except `.env.example` (which follows the normal rule). Gitlinks (mode
+      # 160000) in any commit and changes to .gitmodules are refused. Renames
+      # count on both sides. Binary changes in any commit are refused, since
+      # the scan reads them only as text. Each problem names the first
+      # commit that has it. Paths are printed JSON-quoted, so no path can
+      # inject a workflow command or an output line.
+      - name: Check every commit's paths against the plan
         id: paths
         env:
           BASE_SHA: ${{ needs.build.outputs.base_sha }}
@@ -525,6 +644,15 @@ jobs:
               return subprocess.run(cmd, check=True, capture_output=True).stdout.decode("utf-8", "replace")
 
 
+          def commit_records(sha, mode):
+              # One commit against its first parent (or nothing, for a root commit).
+              out = git(
+                  "diff-tree", "-r", "--root", "--no-commit-id", mode, "-z", "--no-renames",
+                  "--diff-merges=first-parent", "--ignore-submodules=all", sha,
+              )
+              return [record for record in out.split("\0") if record]
+
+
           plan = open(os.environ["PLAN"], encoding="utf-8").read()
           entries = []
           for line in section(plan, "Files to change"):
@@ -536,114 +664,49 @@ jobs:
           print("Plan allows:", json.dumps(entries))
 
           base = os.environ["BASE_SHA"]
-          changed = [p for p in git("diff", "--name-only", "--no-renames", "--ignore-submodules=all", "-z", base, "HEAD").split("\0") if p]
-          problems = []
-          for path in changed:
-              name = path.rsplit("/", 1)[-1]
-              if name.startswith(".env") and name != ".env.example":
-                  problems.append(f"{json.dumps(path)} is a .env file")
-              elif path == ".gitmodules":
-                  problems.append(f"{json.dumps(path)} changes submodules, which are not allowed")
-              elif path in PROTECTED_FILES or path.startswith(PROTECTED_DIRS):
-                  if path not in entries:
-                      problems.append(f"{json.dumps(path)} is protected and its exact path is not named in the plan")
-              elif not named(path, entries):
-                  problems.append(f"{json.dumps(path)} is not listed in the plan")
-          # Gitlinks, read from each commit's tree (a diff with
-          # --ignore-submodules would hide them).
-          gitlinks = set()
-          for sha in git("rev-list", f"{base}..HEAD").split():
+          shas = git("rev-list", "--reverse", f"{base}..HEAD").split()
+          # Path -> the first commit that changes it, over every commit.
+          changed, binary, gitlinks = {}, {}, {}
+          for sha in shas:
+              short = sha[:12]
+              for path in commit_records(sha, "--name-only"):
+                  changed.setdefault(path, short)
+              for record in commit_records(sha, "--numstat"):
+                  if record.startswith("-\t-\t"):
+                      binary.setdefault(record[4:], short)
+              # Gitlinks, read from the commit's tree (a diff with
+              # --ignore-submodules would hide them).
               for record in git("ls-tree", "-r", "-z", "--full-tree", sha).split("\0"):
                   meta, _, path = record.partition("\t")
                   if meta.split(" ", 1)[0] == "160000":
-                      gitlinks.add(path)
-          for path in sorted(gitlinks):
-              problems.append(f"{json.dumps(path)} is a gitlink (submodule), which is not allowed")
-          for line in git("diff", "--numstat", "--no-renames", "--ignore-submodules=all", base, "HEAD").splitlines():
-              if line.startswith("-\t-\t"):
-                  problems.append(f"{json.dumps(line[4:])} is a binary change")
-          if not changed:
-              problems.append("the commits change no files")
+                      gitlinks.setdefault(path, short)
+
+          problems = []
+          for path, short in changed.items():
+              where = f"{json.dumps(path)} (commit {short})"
+              name = path.rsplit("/", 1)[-1]
+              if name.startswith(".env") and name != ".env.example":
+                  problems.append(f"{where} is a .env file")
+              elif path == ".gitmodules":
+                  problems.append(f"{where} changes submodules, which are not allowed")
+              elif name == ".gitattributes":
+                  if path not in entries:
+                      problems.append(f"{where} changes git attributes and its exact path is not named in the plan")
+              elif path in PROTECTED_FILES or path.startswith(PROTECTED_DIRS):
+                  if path not in entries:
+                      problems.append(f"{where} is protected and its exact path is not named in the plan")
+              elif not named(path, entries):
+                  problems.append(f"{where} is not listed in the plan")
+          for path, short in gitlinks.items():
+              problems.append(f"{json.dumps(path)} (commit {short}) is a gitlink (submodule), which is not allowed")
+          for path, short in binary.items():
+              problems.append(f"{json.dumps(path)} (commit {short}) is a binary change")
+          net = git("diff", "--name-only", "--no-renames", "--ignore-submodules=all", "-z", base, "HEAD")
+          if not net.strip("\0"):
+              problems.append("the commits change no files overall")
           if problems:
               fail(problems)
-          print("Changed paths are all allowed:", json.dumps(changed))
-          EOF
-
-      # Every commit from main to the branch head, one at a time: its message
-      # and every added line of its patch, because publish pushes all the
-      # commits, not only the net diff. Same patterns as ship.py plus the
-      # other GitHub token prefixes. `sk-ant-` covers Anthropic API keys and
-      # Claude Code OAuth tokens (sk-ant-oat...). The patch parser tracks
-      # hunks: `+++ ` is a file header only before a file's first `@@`, so an
-      # added line that starts with `++` is still scanned. Output is read as
-      # bytes and split on \n only, so a \r in a line cannot fake a header.
-      # Reports the commit, the file and the kind of match, never the match.
-      # No token values are in this job, so this is a pattern scan only;
-      # build compared the values.
-      - name: Scan every commit's message and added lines for secrets
-        id: secrets
-        env:
-          BASE_SHA: ${{ needs.build.outputs.base_sha }}
-        run: |
-          set -euo pipefail
-          python3 -I - <<'EOF'
-          import json, os, re, subprocess, sys
-
-          PATTERNS = [
-              ("Anthropic key or OAuth token prefix", re.compile(r"sk-ant-")),
-              ("LangSmith key prefix", re.compile(r"lsv2_")),
-              ("GitHub token prefix", re.compile(r"gh[pousr]_")),
-              ("GitHub fine-grained token prefix", re.compile(r"github_pat_")),
-              ("PEM block", re.compile(r"-----BEGIN")),
-              ("KEY= or TOKEN= assignment with a long value", re.compile(r"(?:KEY|TOKEN)\s*=\s*['\"]?[^\s'\"]{16,}")),
-          ]
-
-
-          def git(*args):
-              cmd = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "submodule.recurse=false", *args]
-              return subprocess.run(cmd, check=True, capture_output=True).stdout.decode("utf-8", "replace")
-
-
-          def added_lines(patch):
-              path, in_hunk = "?", False
-              for line in patch.split("\n"):
-                  if line.startswith("diff --git "):
-                      path, in_hunk = "?", False
-                  elif not in_hunk:
-                      if line.startswith("+++ "):
-                          path = line[4:].removeprefix("b/")
-                      elif line.startswith("@@"):
-                          in_hunk = True
-                  elif line.startswith("+"):
-                      yield path, line[1:]
-
-
-          def matches(text):
-              return [label for label, pattern in PATTERNS if pattern.search(text)]
-
-
-          base = os.environ["BASE_SHA"]
-          problems = []
-          for sha in git("rev-list", "--reverse", f"{base}..HEAD").split():
-              short = sha[:12]
-              for label in matches(git("log", "-1", "--format=%B", sha)):
-                  problems.append(f"commit {short} message matches {label}")
-              patch = git(
-                  "show", "--format=", "--patch", "--diff-merges=first-parent", "--no-color",
-                  "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all",
-                  "--unified=0", sha,
-              )
-              for path, line in added_lines(patch):
-                  for label in matches(line):
-                      problems.append(f"commit {short} {json.dumps(path)}: added line matches {label}")
-          if problems:
-              for problem in problems:
-                  print(f"::error::{problem}")
-              reason = "The secret scan found possible secrets: " + "; ".join(problems)
-              with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-                  out.write("reason=" + reason[:1500] + "\n")
-              sys.exit(1)
-          print("No secret patterns in any commit's message or added lines.")
+          print("Every commit's paths are allowed:", json.dumps(sorted(changed)))
           EOF
 
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
