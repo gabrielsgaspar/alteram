@@ -31,7 +31,13 @@ jobs:
         # opt             Python in /opt/uv-python, cache in /opt/uv-cache
         # opt-writable    same, and /opt/uv-cache added to allowWrite (in
         #                 place of ~/.cache/uv's role); no deny rule changes
-        layout: [baseline, opt, opt-writable]
+        # Isolating each half of the hypothesis (26.04 only):
+        # python-temp     Python in _temp as baseline; cache /opt/uv-cache, writable
+        # cache-home      Python in /opt/uv-python; cache in ~/.cache/uv as baseline
+        layout: [baseline, opt, opt-writable, python-temp, cache-home]
+        exclude:
+          - {os: ubuntu-24.04, layout: python-temp}
+          - {os: ubuntu-24.04, layout: cache-home}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,14 +61,23 @@ jobs:
           LAYOUT: ${{ matrix.layout }}
         run: |
           set -euo pipefail
-          if [ "${LAYOUT}" = "baseline" ]; then
-            echo "UV_CACHE_DIR=/home/runner/.cache/uv" >> "${GITHUB_ENV}"
-          else
-            # Created before setup-uv and uv sync, owned by the runner user.
-            sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/uv-python /opt/uv-cache
+          # Created before setup-uv and uv sync, owned by the runner user.
+          opt_python() {
+            sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/uv-python
             echo "UV_PYTHON_INSTALL_DIR=/opt/uv-python" >> "${GITHUB_ENV}"
+          }
+          opt_cache() {
+            sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/uv-cache
             echo "UV_CACHE_DIR=/opt/uv-cache" >> "${GITHUB_ENV}"
-          fi
+          }
+          home_cache() { echo "UV_CACHE_DIR=/home/runner/.cache/uv" >> "${GITHUB_ENV}"; }
+          # No UV_PYTHON_INSTALL_DIR: setup-uv picks _temp/uv-python-dir.
+          case "${LAYOUT}" in
+            baseline) home_cache ;;
+            opt | opt-writable) opt_python; opt_cache ;;
+            python-temp) opt_cache ;;
+            cache-home) opt_python; home_cache ;;
+          esac
 
       # The agent-build step, copied verbatim (lines 163-241 of
       # agent-build.yml on main).
@@ -153,7 +168,7 @@ jobs:
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: false
-          cache-local-path: ${{ matrix.layout == 'baseline' && '/home/runner/.cache/uv' || '/opt/uv-cache' }}
+          cache-local-path: ${{ (matrix.layout == 'baseline' || matrix.layout == 'cache-home') && '/home/runner/.cache/uv' || '/opt/uv-cache' }}
       - run: uv sync --locked
 
       - name: Where uv put things (outside the sandbox)
@@ -190,7 +205,7 @@ jobs:
               "/home/runner/work/_tool/**", "/home/runner/runners/**",
           ]
           allow_write = [".", "~/.cache/uv", tmp]
-          if layout == "opt-writable":
+          if layout in ("opt-writable", "python-temp"):
               allow_write.append("/opt/uv-cache")
           deny_env = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "GITHUB_TOKEN",
                       "GH_TOKEN", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
