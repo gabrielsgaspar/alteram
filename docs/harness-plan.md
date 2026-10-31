@@ -158,9 +158,11 @@ From PowerShell:
 wsl.exe -- bash -lic 'cd ~/projects/alteram && git pull --ff-only && bash scripts/ship-herdr.sh task tasks/<name>.md'
 ```
 
-## GitHub flow: issue → label → plan comment
+## GitHub flow: issue → plan comment → build PR
 
-A second, GitHub-side entry point. It only plans; it never builds.
+A second, GitHub-side entry point in two stages. `agent-plan` only plans. Once a person has read the plan, `agent-build` implements it and opens a PR. Nothing in it merges.
+
+### Plan: agent-plan label → plan comment
 
 1. Someone opens an issue from the **Agent task** template (`.github/ISSUE_TEMPLATE/agent-task.md`). It has the same sections as `tasks/TEMPLATE.md`: Goal, In scope, Out of scope, Done when.
 2. A person with admin or write access adds the `agent-plan` label. Run `bash scripts/create_labels.sh` once to create `agent-plan`, `agent-build` and `needs-human`; it is safe to run again.
@@ -169,4 +171,28 @@ A second, GitHub-side entry point. It only plans; it never builds.
 
 The issue text is treated as data, not instructions. Reads are fenced to the checkout: `permissions.blockReadsOutsideWorkingDirectories` is on for `Read`, `Grep` and `Glob`, and deny rules cover `/proc`, `/etc`, `/root`, `/tmp` and the runner's `/home/runner` credential and temp paths. `git diff` is not allowed, because it reads a file outside the repo when given such a path (with or without `--no-index`); use `git log -p`. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` strips credentials from Bash subprocesses, but not from the Claude process itself. Bash deny rules are not a security boundary. The agent cannot post, edit files, or change labels or settings; a plain workflow step posts the comment with the job token (`contents: read`, `issues: write`). Because that token is `GITHUB_TOKEN`, the comment does not trigger any other workflow. The workflow only runs once it is on `main`.
 
-How it relates to the local ship tool: the issue comment is advice for a person. Turning an approved plan into work is still local. Copy it into `tasks/<name>.md` and run `scripts/ship.py` (or `ship-herdr.sh`) as described in [Ship](#ship). The `agent-build` and `needs-human` labels exist for that later step; nothing in GitHub reads them yet.
+### Build: agent-build label → PR
+
+5. A person with admin or write access reads the plan and adds the `agent-build` label. `.github/workflows/agent-build.yml` runs on `issues: labeled` only and has four jobs:
+   - **build**: The guard runs first, the same as in agent-plan. The job then refuses to start unless the newest `## Agent plan: ` comment by `github-actions[bot]` is a Plan, the issue has not been edited since, and branch `agent/issue-<n>` does not exist yet. Then come the same sandbox setup as agent-plan and `uv sync --locked`, both outside the sandbox. Claude (Sonnet, `claude-sonnet-5-5`) reads the issue and plan from `.agent-build/` as data and commits on `agent/issue-<n>`. Its tools are Read, Grep, Glob, and Edit/Write inside the checkout only (never `.git/`). Bash is limited to `uv sync`, `uv run ruff *`, `uv run pytest *`, `git status`, `git diff`, `git add *` and `git commit *`: no push, `gh`, curl or network tools. A plain step then checks Claude's result: committed, nothing left uncommitted, on the branch. It hands the commits and the plan to the next job as a git bundle.
+   - **verify** (no secrets, fresh checkout): Every changed path must be listed under the plan's "Files to change", as an exact path or a directory ending in `/`. `.github/`, `.claude/`, `prompts/`, `cases/`, `pyproject.toml` and `uv.lock` need an exact mention. `.env` is never allowed, and binary changes are refused. A secret scan covers added lines and commit messages: `sk-ant-` (Anthropic keys and Claude Code OAuth tokens), `lsv2_`, `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`, `github_pat_`, PEM headers, and long `KEY=`/`TOKEN=` values. Then `ruff check`, `ruff format --check` and `pytest`.
+   - **publish**: Runs no repository code. It checks the bundle is the one verify passed, then pushes with a one-hour token from our own GitHub App (no force, hooks off). It opens a PR titled from the issue, whose body holds `Closes #<n>`, the plan's "Done when" list and a run link.
+   - **report**: If any job failed, it posts one short comment on the issue and adds `needs-human`.
+6. CI runs on the PR, because an App token, unlike `GITHUB_TOKEN`, starts workflows. A person reviews and merges. To run the build again, delete the branch or close its PR, then remove and re-add the label.
+
+Permissions per job: build `contents: read` and `issues: read`; verify and publish `contents: read`; report `issues: write`. No job has `id-token`. The App token has only contents and pull-requests write, on this repo only.
+
+**Why not the Claude GitHub App token.** The action writes whatever token it is given into the origin URL in `.git/config`, where Claude can read it. It revokes the App token when the action step ends, and the token includes Workflows write. So Claude gets only the read-only job token, and a separate job pushes.
+
+**What protects the OAuth token while Claude's tests run.** In build, `CLAUDE_CODE_OAUTH_TOKEN` lives in the Claude process only. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` removes it from Bash subprocesses and runs them in their own PID namespace, so `/proc/<pid>/environ` of the Claude process is not visible (checked locally: a sandboxed shell sees only its own processes). `sandbox.credentials` also unsets it and the GitHub and Actions token variables, and hides `~/.claude/.credentials.json` and `~/.claude.json`. Read, Grep and Glob are fenced to the checkout with deny rules on `/proc` and the runner paths. Bash cannot reach `github.com` or `api.github.com`; only PyPI is open. What remains:
+- a sandbox or kernel escape;
+- a way to the token that these layers do not cover (the scrub is name- and value-based; the docs call it one layer, not the only control);
+- data leaving through PyPI requests.
+
+The job token Claude can see is read-only on a public repo. Anything Claude commits must still pass verify, CI and a person.
+
+**Limits.** A plan that changes `.github/workflows/` will fail at push, because the App has no Workflows permission, and ends with `needs-human`. Bash permission rules are not a security boundary: `uv run pytest` runs whatever code Claude writes, inside the sandbox.
+
+**One-time setup** (repo admin): create a GitHub App with repository permissions Contents and Pull requests read and write, and nothing else. Install it on this repository only. Add its client ID as the Actions variable `AGENT_APP_CLIENT_ID` and a private key as the secret `AGENT_APP_PRIVATE_KEY`.
+
+How it relates to the local ship tool: `ship.py` runs a builder and a reviewer and can merge. `agent-build` has no reviewer and never merges. Its PR is reviewed by a person, or locally with `scripts/ship.py branch agent/issue-<n> --task tasks/<name>.md`.
