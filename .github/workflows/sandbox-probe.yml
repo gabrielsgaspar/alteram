@@ -1,11 +1,12 @@
 name: Sandbox probe
 
-# Finds a runner setup where Claude Code's Bash sandbox works, nested user
-# namespace included (apply-seccomp, and the PID namespace that
-# CLAUDE_CODE_SUBPROCESS_ENV_SCRUB uses). Runs commands through the sandbox
-# runtime Claude Code is built on (@anthropic-ai/sandbox-runtime, CLI `srt`)
-# with the filesystem and network rules of .claude/settings.json plus
-# agent-build's deniedDomains. No secrets, no Claude, no write token.
+# Does uv work inside the Claude step's sandbox? Runs `uv run ruff check .`
+# and `uv run pytest -q` through the sandbox runtime Claude Code is built on
+# (@anthropic-ai/sandbox-runtime, CLI `srt`), with the filesystem, network
+# and credential rules agent-build's Claude step ends up with: the repo's
+# .claude/settings.json, the step's `settings`, and its Read deny rules
+# (Claude Code merges Read deny rules into the sandbox). No secrets, no
+# Claude, contents: read only.
 on:
   push:
     branches: ["probe/**"]
@@ -15,25 +16,22 @@ permissions:
 
 env:
   SRT_VERSION: 0.0.81
-  UV_CACHE_DIR: /home/runner/.cache/uv
 
 jobs:
   probe:
-    name: ${{ matrix.os }} / ${{ matrix.setup }}
+    name: ${{ matrix.os }} / ${{ matrix.layout }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-26.04]
-        # none            install packages only
-        # bwrap-profile   + the documented AppArmor profile for /usr/bin/bwrap
-        # sysctl          + kernel.apparmor_restrict_unprivileged_userns=0 only
-        # profiles        + bwrap profile and a userns profile for srt's apply-seccomp
-        # replace         + Ubuntu's bwrap-userns-restrict swapped for the two
-        #                   profiles above (restriction sysctl stays on)
-        # agent-build     the agent-build step, verbatim (a, then b, then c)
-        setup: [none, bwrap-profile, sysctl, profiles, replace, agent-build]
+        os: [ubuntu-26.04, ubuntu-24.04]
+        # baseline        as agent-build: Python in setup-uv's _temp dir,
+        #                 cache in ~/.cache/uv
+        # opt             Python in /opt/uv-python, cache in /opt/uv-cache
+        # opt-writable    same, and /opt/uv-cache added to allowWrite (in
+        #                 place of ~/.cache/uv's role); no deny rule changes
+        layout: [baseline, opt, opt-writable]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,84 +41,32 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Fetch sandbox-runtime (pinned) and find apply-seccomp
+      # Outside /home/runner: the merged Read denies hide /home/runner/.*,
+      # where npx would cache it. (Claude Code embeds its own helper.)
+      - name: Install sandbox-runtime ${{ env.SRT_VERSION }} under /opt/srt
         run: |
           set -euo pipefail
-          # Outside /home/runner: agent-build's Read denies (merged into the
-          # sandbox) hide /home/runner/.*, where npx would cache it.
           sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/srt
           npm install --prefix /opt/srt --no-audit --no-fund "@anthropic-ai/sandbox-runtime@${SRT_VERSION}"
           npx --prefix /opt/srt --no-install srt --help > /dev/null
-          seccomp=/opt/srt/node_modules/@anthropic-ai/sandbox-runtime/vendor/seccomp/x64/apply-seccomp
-          test -x "${seccomp}"
-          echo "APPLY_SECCOMP=${seccomp}" >> "${GITHUB_ENV}"
-          echo "apply-seccomp: ${seccomp}"
 
-      - name: Stock AppArmor policy for bwrap, before any setup
-        run: |
-          for f in /etc/apparmor.d/bwrap /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/unprivileged_userns; do
-            echo "::group::${f}"; grep -v -E '^\s*(#|$)' "${f}" 2>/dev/null || echo "(absent)"; echo "::endgroup::"
-          done
-
-      - name: Base packages (ripgrep for srt's denyRead globs; Claude Code bundles its own)
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap socat ripgrep
-
-      - name: Setup variant ${{ matrix.setup }}
-        if: matrix.setup != 'agent-build' && matrix.setup != 'none'
+      - name: uv folders for layout ${{ matrix.layout }}
         env:
-          SETUP: ${{ matrix.setup }}
+          LAYOUT: ${{ matrix.layout }}
         run: |
           set -euo pipefail
-          restrict="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
-          echo "restriction before: ${restrict}"
-          bwrap_profile() {
-            sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
-          abi <abi/4.0>,
-          include <tunables/global>
-
-          profile bwrap /usr/bin/bwrap flags=(unconfined) {
-            userns,
-            include if exists <local/bwrap>
-          }
-          EOF
-            sudo apparmor_parser -r /etc/apparmor.d/bwrap
-          }
-          seccomp_profile() {
-            sudo tee /etc/apparmor.d/srt-apply-seccomp > /dev/null <<EOF
-          abi <abi/4.0>,
-          include <tunables/global>
-
-          profile srt-apply-seccomp ${APPLY_SECCOMP} flags=(unconfined) {
-            userns,
-          }
-          EOF
-            sudo apparmor_parser -r /etc/apparmor.d/srt-apply-seccomp
-          }
-          if [ "${restrict}" != "1" ]; then
-            echo "The AppArmor userns restriction is not on (${restrict}); nothing to do."
-            exit 0
+          if [ "${LAYOUT}" = "baseline" ]; then
+            echo "UV_CACHE_DIR=/home/runner/.cache/uv" >> "${GITHUB_ENV}"
+          else
+            # Created before setup-uv and uv sync, owned by the runner user.
+            sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/uv-python /opt/uv-cache
+            echo "UV_PYTHON_INSTALL_DIR=/opt/uv-python" >> "${GITHUB_ENV}"
+            echo "UV_CACHE_DIR=/opt/uv-cache" >> "${GITHUB_ENV}"
           fi
-          case "${SETUP}" in
-            bwrap-profile) bwrap_profile ;;
-            sysctl) sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 ;;
-            profiles) bwrap_profile; seccomp_profile ;;
-            replace)
-              if [ -f /etc/apparmor.d/bwrap-userns-restrict ]; then
-                sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict || true
-                sudo ln -sf /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/
-              fi
-              bwrap_profile; seccomp_profile ;;
-            *) echo "unknown setup ${SETUP}"; exit 1 ;;
-          esac
 
       # The agent-build step, copied verbatim (lines 163-241 of
-      # agent-build.yml). continue-on-error so the probe still reports.
+      # agent-build.yml on main).
       - name: Install sandbox dependencies (bubblewrap, socat)
-        if: matrix.setup == 'agent-build'
-        continue-on-error: true
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -200,65 +146,95 @@ jobs:
           fi
           echo "bubblewrap and the nested user namespace work."
 
-      # Same uv setup as agent-build: Python and dependencies outside the
-      # sandbox, cache in ~/.cache/uv.
+      - name: ripgrep (srt uses it for denyRead globs; Claude Code bundles its own)
+        run: sudo apt-get install -y --no-install-recommends ripgrep
+
+      # Same as agent-build, except cache-local-path follows the layout.
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: false
-          cache-local-path: /home/runner/.cache/uv
+          cache-local-path: ${{ matrix.layout == 'baseline' && '/home/runner/.cache/uv' || '/opt/uv-cache' }}
       - run: uv sync --locked
 
-      - name: Diagnostics
+      - name: Where uv put things (outside the sandbox)
         run: |
-          set +e
-          echo "kernel: $(uname -r)"
-          . /etc/os-release; echo "os: ${PRETTY_NAME}"
-          echo "bwrap: $(bwrap --version 2>&1)"
-          echo "AppArmor enabled: $(cat /sys/module/apparmor/parameters/enabled 2>/dev/null || echo absent)"
-          sudo aa-status 2>/dev/null | head -n 4
-          echo "kernel.apparmor_restrict_unprivileged_userns: $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
-          echo "kernel.apparmor_restrict_unprivileged_unconfined: $(sysctl -n kernel.apparmor_restrict_unprivileged_unconfined 2>/dev/null || echo absent)"
-          echo "kernel.unprivileged_userns_clone: $(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || echo absent)"
-          echo "user.max_user_namespaces: $(sysctl -n user.max_user_namespaces 2>/dev/null || echo absent)"
-          echo "Loaded profiles mentioning bwrap or userns or seccomp:"
-          sudo grep -i -E 'bwrap|userns|seccomp' /sys/kernel/security/apparmor/profiles || echo "  none"
-          echo "Label inside bwrap: $(bwrap --ro-bind / / --proc /proc --dev /dev --unshare-user --unshare-pid cat /proc/self/attr/current 2>&1)"
+          echo "UV_PYTHON_INSTALL_DIR=${UV_PYTHON_INSTALL_DIR:-unset}"
+          echo "UV_CACHE_DIR=${UV_CACHE_DIR:-unset}"
+          echo ".venv/bin/python -> $(readlink -f .venv/bin/python)"
+          grep -E '^home' .venv/pyvenv.cfg
+          du -sh "${UV_CACHE_DIR}" 2>/dev/null || true
 
-      - name: Probe through srt ${{ env.SRT_VERSION }}
+      - name: Probe through srt
         env:
           OS: ${{ matrix.os }}
-          SETUP: ${{ matrix.setup }}
+          LAYOUT: ${{ matrix.layout }}
         run: |
           set +e -uo pipefail
           settings="${RUNNER_TEMP}/srt-settings.json"
-          # .claude/settings.json's sandbox rules, plus the working directory
-          # (Claude Code adds it to allowWrite) and agent-build's deniedDomains.
-          cat > "${settings}" <<'EOF'
-          {
-            "filesystem": {
-              "denyRead": ["./.env", "./.env.local", "./.env.production", "./**/.env"],
-              "allowWrite": [".", "~/.cache/uv"],
-              "denyWrite": []
-            },
-            "network": {
-              "allowedDomains": ["pypi.org", "files.pythonhosted.org", "github.com", "api.github.com"],
-              "deniedDomains": ["github.com", "api.github.com"]
-            }
+          # Claude Code gives sandboxed commands their own TMPDIR under /tmp
+          # and adds it to allowWrite; this mimics that.
+          sandbox_tmp="/tmp/claude-$(id -u)"
+          mkdir -p "${sandbox_tmp}"
+          python3 - "${settings}" "${LAYOUT}" "${sandbox_tmp}" <<'PY'
+          import json, sys
+          dst, layout, tmp = sys.argv[1:]
+          deny_read = [
+              # .claude/settings.json: sandbox.filesystem.denyRead and the
+              # permissions.deny Read rules (the same .env paths)
+              "./.env", "./.env.local", "./.env.production", "./**/.env",
+              # agent-build Claude step: --disallowedTools Read(...) rules,
+              # in the form Claude Code passes them on
+              "./.git/config", "/proc/**", "/etc/**", "/root/**", "/tmp/**",
+              "/home/runner/.*", "/home/runner/.*/**",
+              "/home/runner/work/_temp/**", "/home/runner/work/_actions/**",
+              "/home/runner/work/_tool/**", "/home/runner/runners/**",
+          ]
+          allow_write = [".", "~/.cache/uv", tmp]
+          if layout == "opt-writable":
+              allow_write.append("/opt/uv-cache")
+          deny_env = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "GITHUB_TOKEN",
+                      "GH_TOKEN", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+          cfg = {
+              "filesystem": {"denyRead": deny_read, "allowWrite": allow_write, "denyWrite": []},
+              "network": {
+                  "allowedDomains": ["pypi.org", "files.pythonhosted.org", "github.com", "api.github.com"],
+                  "deniedDomains": ["github.com", "api.github.com"],
+              },
+              "credentials": {
+                  "envVars": [{"name": n, "mode": "deny"} for n in deny_env],
+                  "files": [{"path": "~/.claude/.credentials.json", "mode": "deny"},
+                            {"path": "~/.claude.json", "mode": "deny"}],
+              },
           }
-          EOF
+          json.dump(cfg, open(dst, "w"), indent=2)
+          PY
+          echo "::group::srt settings"; cat "${settings}"; echo; echo "::endgroup::"
           # A planted secret: synthetic, only to prove denyRead holds.
           echo "PROBE_CANARY=not-a-secret" > .env
 
-          srt() { npx --prefix /opt/srt --no-install srt --settings "${settings}" "$@"; }
+          srt() { TMPDIR="${sandbox_tmp}" npx --prefix /opt/srt --no-install srt --settings "${settings}" "$@"; }
+          # offline: UV_PYTHON_DOWNLOADS=never UV_OFFLINE=1 in the environment
+          # the sandboxed command inherits, as a Claude step env would give it.
+          run_srt() {
+            if [ "$1" = offline ]; then
+              UV_PYTHON_DOWNLOADS=never UV_OFFLINE=1 srt -c "$2"
+            else
+              srt -c "$2"
+            fi
+          }
+          show() {
+            echo "::group::evidence: $1"
+            run_srt offline "$2" 2>&1 | tail -n 40
+            echo "::endgroup::"
+          }
           results=""
           fails=0
-          # expect: 0 = must succeed, 1 = must fail (an enforcement check).
-          # An enforcement check passes only if the sandboxed shell started
-          # (printed the marker) and then the denied action failed.
+          # expect 0: must succeed. expect 1: an enforcement check, passes only
+          # if the sandboxed shell started and then the denied action failed.
           check() {
-            local label="$1" expect="$2" cmd="$3" out rc verdict
+            local label="$1" expect="$2" mode="$3" cmd="$4" out rc verdict
             if [ "${expect}" = 1 ]; then cmd="echo SRT_STARTED; ${cmd}"; fi
-            out="$(srt -c "${cmd}" 2>&1)"; rc=$?
+            out="$(run_srt "${mode}" "${cmd}" 2>&1)"; rc=$?
             if { [ "${expect}" = 0 ] && [ "${rc}" = 0 ]; } ||
                { [ "${expect}" = 1 ] && [ "${rc}" != 0 ] && grep -q '^SRT_STARTED$' <<< "${out}"; }; then
               verdict=pass
@@ -266,83 +242,31 @@ jobs:
               verdict=FAIL; fails=$((fails + 1))
             fi
             echo "::group::${label}: ${verdict} (exit ${rc})"
-            printf '%s\n' "${out}" | tail -n 15
+            printf '%s\n' "${out}" | tail -n 25
             echo "::endgroup::"
-            echo "RESULT|${OS}|${SETUP}|${label}|${verdict}|${rc}"
+            echo "RESULT|${OS}|${LAYOUT}|${label}|${verdict}|${rc}"
             results="${results}| ${label} | ${verdict} | ${rc} |"$'\n'
           }
 
-          check "true" 0 "true"
-          check "git status" 0 "git status --short"
-          check "uv --version" 0 "uv --version"
-          check "enforced: .env unreadable" 1 "cat .env"
-          check "enforced: github.com denied" 1 "curl -sS --max-time 10 -o /dev/null https://github.com"
-          check "enforced: no nested userns" 1 "unshare --user true"
-          check "pypi.org reachable" 0 "curl -sS --max-time 10 -o /dev/null https://pypi.org/simple/"
-          check "uv run python (extra)" 0 "uv run --locked python -c 'import alteram, sys; print(sys.version)'"
+          # Evidence: what uv sees inside the sandbox.
+          show "environment" 'env | grep -E "^(UV_|TMPDIR=)" | sort'
+          show "venv interpreter" 'ls -l .venv/bin/python; p="$(readlink -f .venv/bin/python)"; echo "resolves to: $p"; ls -l "$p"; cat .venv/pyvenv.cfg'
+          show "Python install dir" 'd="${UV_PYTHON_INSTALL_DIR:-unset}"; echo "$d"; ls -la "$d"'
+          show "cache dir" 'echo "$UV_CACHE_DIR"; ls -la "$UV_CACHE_DIR" | head -n 8; touch "$UV_CACHE_DIR/.probe-write" && echo "cache writable" && rm -f "$UV_CACHE_DIR/.probe-write"'
+          show "uv -v run (interpreter discovery)" 'uv -v run python -c "import sys; print(sys.executable)" 2>&1 | grep -v -E "^\s*$" | head -n 40'
 
-          check "uv run, UV_PYTHON_INSTALL_DIR unset (extra)" 0 "env -u UV_PYTHON_INSTALL_DIR uv run --locked python -c 'import alteram'"
+          check "as Claude ran it: uv run pytest -q" 0 plain "uv run pytest -q"
+          check "offline: uv run ruff check ." 0 offline "uv run ruff check ."
+          check "offline: uv run pytest -q" 0 offline "uv run pytest -q"
+          check "offline: uv sync (allowed for Claude)" 0 offline "uv sync"
+          check "enforced: .env unreadable" 1 offline "cat .env"
+          check "enforced: _temp hidden" 1 offline 'test -n "$(ls -A /home/runner/work/_temp)"'
+          check "enforced: home dotdirs hidden (~/.npm)" 1 offline 'test -n "$(ls -A /home/runner/.npm 2>/dev/null)"'
+          check "enforced: github.com denied" 1 offline "curl -sS --max-time 10 -o /dev/null https://github.com"
+          check "enforced: no nested userns" 1 offline "unshare --user true"
 
-          # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB isolates Bash with bubblewrap
-          # (Claude Code 2.1.316: "bubblewrap is required for subprocess env
-          # scrubbing and isolation"). Two approximations, not Claude Code
-          # itself: (a) a scrub-style bwrap alone; (b) pessimistic, the srt
-          # sandbox nested inside such a bwrap.
-          extra() {
-            local label="$1" v out
-            shift
-            if out="$("$@" 2>&1)"; then v=pass; else v=FAIL; fi
-            echo "::group::${label}: ${v}"; printf '%s\n' "${out}" | tail -n 8; echo "::endgroup::"
-            echo "RESULT|${OS}|${SETUP}|${label}|${v}|-"
-            results="${results}| ${label} | ${v} | - |"$'\n'
-          }
-          scrub_bwrap=(bwrap --new-session --die-with-parent --dev-bind / / --dev /dev --proc /proc --unshare-user --unshare-pid)
-          extra "scrub-style bwrap (approx.)" "${scrub_bwrap[@]}" true
-          extra "srt inside scrub-style bwrap (pessimistic)" "${scrub_bwrap[@]}" \
-            bash -c "cd '${PWD}' && npx --prefix /opt/srt --no-install srt --settings '${settings}' -c true"
-
-          # Claude Code merges Read deny rules into the sandbox's denyRead
-          # (docs: sandboxing, "Paths ... from both sandbox settings and
-          # permission rules are merged"). agent-build denies these with
-          # --disallowedTools. "temp" is only the two that touch uv.
-          deny_rules() {
-            python3 - "${settings}" "$1" "$2" <<'PY'
-          import json, sys
-          src, dst, which = sys.argv[1:]
-          s = json.load(open(src))
-          temp = ["/home/runner/work/_temp", "/home/runner/.*"]
-          full = temp + ["./.git/config", "/proc", "/etc", "/root", "/tmp",
-                         "/home/runner/work/_actions", "/home/runner/work/_tool", "/home/runner/runners"]
-          s["filesystem"]["denyRead"] += temp if which == "temp" else full
-          json.dump(s, open(dst, "w"))
-          PY
-          }
-          deny_rules "${RUNNER_TEMP}/srt-temp.json" temp
-          deny_rules "${RUNNER_TEMP}/srt-full.json" full
-          base_settings="${settings}"
-          uvpy="uv run --locked python -c 'import alteram, sys; print(sys.executable)'"
-          settings="${RUNNER_TEMP}/srt-temp.json"; check "agent-build denies (uv dirs): uv run (extra)" 0 "${uvpy}"
-          settings="${RUNNER_TEMP}/srt-full.json"; check "agent-build denies (all): true (extra)" 0 "true"
-          settings="${RUNNER_TEMP}/srt-full.json"; check "agent-build denies (all): uv run (extra)" 0 "${uvpy}"
-          # Same, with Python installed outside every denied path.
-          # As agent-build would do it: UV_PYTHON_INSTALL_DIR for every later
-          # step, Python installed there, .venv rebuilt against it.
-          sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/uv-python
-          export UV_PYTHON_INSTALL_DIR=/opt/uv-python
-          rm -rf .venv
-          uv sync --locked --managed-python 2>&1 | tail -n 3
-          echo "venv python now: $(readlink -f .venv/bin/python)"
-          settings="${RUNNER_TEMP}/srt-temp.json"; check "denies (uv dirs), Python in /opt: uv run (extra)" 0 "${uvpy}"
-          settings="${RUNNER_TEMP}/srt-full.json"; check "denies (all), Python in /opt: uv run (extra)" 0 "${uvpy}"
-          settings="${base_settings}"
-
-          if [ "${fails}" != 0 ]; then
-            echo "::group::srt --debug true"
-            srt --debug -c true 2>&1 | tail -n 40
-            echo "::endgroup::"
-          fi
           {
-            echo "### ${OS} / ${SETUP}"
+            echo "### ${OS} / ${LAYOUT}"
             echo "| check | result | exit |"
             echo "| --- | --- | --- |"
             printf '%s' "${results}"
