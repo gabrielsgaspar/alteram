@@ -83,6 +83,16 @@ uv run alteram eval compare <a.json> <b.json>
 
 **Current baseline** (`eval/baselines/20261029T185846Z.json`, judge prompt v2): 83% accuracy [50%, 100%] over 4 cases × 3 runs, $0.12 per run. With only 4 cases the interval is wide, so treat it as a smoke test, not a measurement.
 
+### Other commands
+
+```bash
+uv run alteram --version
+uv run alteram cases list
+```
+
+- `--version` prints the installed package version.
+- `cases list` prints one line per case in `cases/` with its id, kind and title, and never the expected outcome.
+
 ### Build → review harness
 
 For coding work on Alteram itself, not for disputes:

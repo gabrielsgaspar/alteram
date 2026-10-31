@@ -45,6 +45,7 @@ from alteram.models import (
     Argument,
     Case,
     JudgeOrder,
+    Kind,
     RejudgeRun,
     RejudgeStats,
     Run,
@@ -307,8 +308,11 @@ def rejudge_command(
     return 0
 
 
+KIND_WIDTH = max(len(kind) for kind in get_args(Kind))
+
+
 def format_case_line(case: Case) -> str:
-    return f"{case.id}  {case.kind:<12}  {case.title}"  # never `expected`
+    return f"{case.id}  {case.kind:<{KIND_WIDTH}}  {case.title}"  # never `expected`
 
 
 def cases_command(cases_dir: Path) -> int:
