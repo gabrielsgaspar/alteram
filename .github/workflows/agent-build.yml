@@ -11,8 +11,13 @@ name: Agent build
 #   verify   Plain code checks the commits: paths, secrets, ruff, pytest.
 #   publish  Pushes the verified commits and opens a PR with our GitHub App.
 #            Runs no repository code.
-#   report   On any failure: one comment and the needs-human label.
-# Nothing here merges, force-pushes or uses id-token.
+#   report   On any failure after the guard passed: one comment and the
+#            needs-human label.
+# Nothing here merges, force-pushes or uses id-token. No step that runs git
+# (or anything else) in a checkout Claude's code has touched holds a secret,
+# and git there always runs with fsmonitor and hooks off and never recurses
+# into submodules. Caching is off in every job, so nothing here writes to the
+# uv cache that CI reads.
 on:
   issues:
     types: [labeled]
@@ -42,7 +47,8 @@ jobs:
       contents: read # check out the repo and its history
       issues: read # read the plan comment and when the issue was last edited
     outputs:
-      reason: ${{ steps.guard.outputs.reason || steps.plan.outputs.reason || steps.branch.outputs.reason || steps.result.outputs.reason }}
+      reason: ${{ steps.guard.outputs.reason || steps.plan.outputs.reason || steps.branch.outputs.reason || steps.result.outputs.reason || steps.commits.outputs.reason }}
+      guard_ok: ${{ steps.guard.outputs.guard_ok }}
       base_sha: ${{ steps.branch.outputs.base_sha }}
       plan_url: ${{ steps.plan.outputs.plan_url }}
     steps:
@@ -69,6 +75,8 @@ jobs:
               *) fail "${user} needs admin or write access to run the builder." ;;
             esac
           done
+          # report runs only if this is set, so a failed guard posts nothing.
+          echo "guard_ok=true" >> "${GITHUB_OUTPUT}"
 
       # 2. The plan. The newest comment by github-actions[bot] that starts with
       #    "## Agent plan: " must be a Plan (not "Needs clarification", "Out of
@@ -168,8 +176,11 @@ jobs:
       # 4. Dependencies before Claude starts, outside the sandbox. Inside it,
       #    uv could not download Python 3.12 (the download hosts are not on the
       #    network allowlist). After this, Claude's `uv sync` is a no-op and
-      #    `uv run` needs no network. No GitHub cache: its key is not ref-aware
-      #    and the cache dir must be ~/.cache/uv.
+      #    `uv run` needs no network. No GitHub cache, here or in verify:
+      #    issue-triggered jobs share main's cache scope, which ci.yml
+      #    restores from, so a cache saved here could poison CI. (The cache
+      #    dir also has to be ~/.cache/uv.) With enable-cache false,
+      #    setup-uv's post step does nothing.
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: false
@@ -219,9 +230,24 @@ jobs:
       #      listed variables and files are hidden from sandboxed commands.
       #      Read, Grep and Glob refuse paths outside the checkout.
       #    - Edit is allowed inside the checkout only, never in .git/ or in
-      #      .agent-build/. Bash is limited to the commands below; the deny
-      #      rules on `git commit` stop it reading other files into a message.
+      #      .agent-build/. Bash is limited to the commands below.
+      #    - `git commit` is allowed only as `git commit -m ...`. A Bash rule
+      #      matches its text literally up to the first `*`, and `*` is any
+      #      text, so no rule can forbid options after the message
+      #      (`-m x -aF f`, `-tf`, `--fil f`). Denying every spelling would
+      #      also deny ordinary messages. The denies below catch the usual
+      #      spellings only. This is not a boundary: `uv run pytest` runs any
+      #      code in the same sandbox and can read whatever `git commit -F`
+      #      could. What limits the damage: the sandbox hides the credential
+      #      files and token variables and blocks github.com; verify scans
+      #      every commit's message and diff before publish pushes anything;
+      #      and a person reviews the PR.
       #    - The same Read deny rules as agent-plan, plus .git/config.
+      #    - classify_inline_comments is off, so the action's post-Claude
+      #      step (bun, run in the checkout, with GITHUB_TOKEN) does not run.
+      #      In agent mode the action runs no git after Claude exits (checked
+      #      in src/entrypoints/run.ts at this pin: the git cleanup is tag mode
+      #      only).
       - name: Build
         id: claude
         uses: anthropics/claude-code-action@d535f5172dec02b204866b393d6b20b9b2aaf98d # v1.0.266
@@ -230,6 +256,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          classify_inline_comments: "false"
           settings: >-
             {"permissions":{"blockReadsOutsideWorkingDirectories":true},
             "sandbox":{"network":{"deniedDomains":["github.com","api.github.com"]},
@@ -240,8 +267,8 @@ jobs:
             --model claude-sonnet-5-5
             --max-turns 60
             --tools "Read,Grep,Glob,Edit,Write,Bash"
-            --allowedTools "Read" "Grep" "Glob" "Edit(./**)" "Bash(uv sync)" "Bash(uv run ruff *)" "Bash(uv run pytest *)" "Bash(git status)" "Bash(git diff)" "Bash(git add *)" "Bash(git commit *)"
-            --disallowedTools "mcp__*" "NotebookEdit" "WebFetch" "WebSearch" "Edit(./.git/**)" "Edit(./.agent-build/**)" "Bash(git commit *-F *)" "Bash(git commit *--file*)" "Bash(git commit *--template*)" "Bash(git * --pathspec-from-file*)" "Read(./.git/config)" "Read(//proc/**)" "Read(//etc/**)" "Read(//root/**)" "Read(//tmp/**)" "Read(//home/runner/.*)" "Read(//home/runner/.*/**)" "Read(//home/runner/work/_temp/**)" "Read(//home/runner/work/_actions/**)" "Read(//home/runner/work/_tool/**)" "Read(//home/runner/runners/**)"
+            --allowedTools "Read" "Grep" "Glob" "Edit(./**)" "Bash(uv sync)" "Bash(uv run ruff *)" "Bash(uv run pytest *)" "Bash(git status)" "Bash(git diff)" "Bash(git add *)" "Bash(git commit -m *)"
+            --disallowedTools "mcp__*" "NotebookEdit" "WebFetch" "WebSearch" "Edit(./.git/**)" "Edit(./.agent-build/**)" "Bash(git commit *-F *)" "Bash(git commit *--file*)" "Bash(git commit *--template*)" "Bash(git commit *-t *)" "Bash(git * --pathspec-from-file*)" "Read(./.git/config)" "Read(//proc/**)" "Read(//etc/**)" "Read(//root/**)" "Read(//tmp/**)" "Read(//home/runner/.*)" "Read(//home/runner/.*/**)" "Read(//home/runner/work/_temp/**)" "Read(//home/runner/work/_actions/**)" "Read(//home/runner/work/_tool/**)" "Read(//home/runner/runners/**)"
             --json-schema '{"type":"object","properties":{"status":{"type":"string","enum":["done","blocked"]},"summary":{"type":"string"}},"required":["status","summary"]}'
           prompt: |
             You are the builder for the Alteram repository. You implement one
@@ -284,50 +311,88 @@ jobs:
             - `blocked`: you stopped. In `summary`, say why in plain words,
               under 200 words.
 
-      # 7. Claude's result, checked by plain code. The summary is only passed
-      #    on (to the failure comment) after a check for the two token values
-      #    and for common token prefixes; the values are compared inside bash,
-      #    never printed. Then the commits go to the next job as a git bundle,
-      #    with the plan, so verify checks exactly what Claude was given.
-      - name: Check the result and bundle the commits
+      # 7. Claude's result, checked by plain code, in two steps so that no
+      #    secret is ever in a step that runs git in Claude's tree.
+      #    a. The structured result. This step holds the two token values, so
+      #       it runs no git and nothing from the checkout, and runs from
+      #       RUNNER_TEMP. The summary is only passed on (to the failure
+      #       comment) after a check for the token values and common token
+      #       prefixes; the values are compared inside bash, never printed.
+      - name: Check Claude's result
         id: result
         if: ${{ !cancelled() && steps.claude.conclusion != 'skipped' }}
+        working-directory: ${{ runner.temp }}
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           JOB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STRUCTURED: ${{ steps.claude.outputs.structured_output }}
-          BASE_SHA: ${{ steps.branch.outputs.base_sha }}
         run: |
           set -euo pipefail
           fail() { printf 'reason=%s\n' "$1" >> "${GITHUB_OUTPUT}"; echo "::error::$1"; exit 1; }
           status="$(jq -r '.status // empty' <<< "${STRUCTURED:-}" 2>/dev/null || true)"
           summary="$(jq -r '.summary // empty' <<< "${STRUCTURED:-}" 2>/dev/null || true)"
-          if [ "${status}" != "done" ]; then
-            if [ "${status}" = "blocked" ] && [ -n "${summary}" ]; then
-              clean=1
-              for secret in "${CLAUDE_CODE_OAUTH_TOKEN:-}" "${JOB_TOKEN:-}"; do
-                if [ -n "${secret}" ] && [[ "${summary}" == *"${secret}"* ]]; then clean=0; fi
-              done
-              if grep -qE 'sk-ant-|lsv2_|gh[pousr]_|github_pat_' <<< "${summary}"; then clean=0; fi
-              if [ "${clean}" = "1" ]; then
-                delimiter="EOF_$(openssl rand -hex 16)"
-                {
-                  echo "reason<<${delimiter}"
-                  printf 'The builder stopped:\n\n%s\n' "${summary:0:2000}"
-                  echo "${delimiter}"
-                } >> "${GITHUB_OUTPUT}"
-                echo "::error::The builder returned blocked."
-                exit 1
-              fi
-              fail "The builder stopped, and its reason looked like it contained a token, so it is not shown."
-            fi
-            fail "The builder did not return a usable result."
+          if [ "${status}" = "done" ]; then
+            echo "The builder returned done."
+            exit 0
           fi
-          [ "$(git symbolic-ref --short HEAD)" = "${BRANCH}" ] || fail "The builder left ${BRANCH}."
-          [ -z "$(git status --porcelain)" ] || fail "The builder left uncommitted changes."
-          count="$(git rev-list --count "${BASE_SHA}..HEAD")"
+          if [ "${status}" = "blocked" ] && [ -n "${summary}" ]; then
+            clean=1
+            for secret in "${CLAUDE_CODE_OAUTH_TOKEN:-}" "${JOB_TOKEN:-}"; do
+              if [ -n "${secret}" ] && [[ "${summary}" == *"${secret}"* ]]; then clean=0; fi
+            done
+            if grep -qE 'sk-ant-|lsv2_|gh[pousr]_|github_pat_' <<< "${summary}"; then clean=0; fi
+            if [ "${clean}" = "1" ]; then
+              delimiter="EOF_$(openssl rand -hex 16)"
+              {
+                echo "reason<<${delimiter}"
+                printf 'The builder stopped:\n\n%s\n' "${summary:0:2000}"
+                echo "${delimiter}"
+              } >> "${GITHUB_OUTPUT}"
+              echo "::error::The builder returned blocked."
+              exit 1
+            fi
+            fail "The builder stopped, and its reason looked like it contained a token, so it is not shown."
+          fi
+          fail "The builder did not return a usable result."
+
+      #    b. The commits. No secrets in env (the job-level env holds none).
+      #       Nested repositories are refused before git runs at all, gitlinks
+      #       and .gitmodules after. Every git call has fsmonitor and hooks
+      #       off and never recurses into submodules. The commits go to the
+      #       next job as a git bundle, with the plan, so verify checks
+      #       exactly what Claude was given.
+      - name: Check the commits and bundle them
+        id: commits
+        if: ${{ !cancelled() && steps.result.outcome == 'success' }}
+        env:
+          BASE_SHA: ${{ steps.branch.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          fail() { printf 'reason=%s\n' "$1" >> "${GITHUB_OUTPUT}"; echo "::error::$1"; exit 1; }
+          g() { git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c submodule.recurse=false "$@"; }
+          # Any .git below the top level (directory, file or link) is a nested repo.
+          nested="$(find . -mindepth 1 -path ./.git -prune -o -name .git -print -quit)" \
+            || fail "Could not scan the checkout for nested repositories."
+          [ -z "${nested}" ] || fail "The checkout contains a nested .git. Nested repositories are not allowed."
+          [ "$(g symbolic-ref --short HEAD)" = "${BRANCH}" ] || fail "The builder left ${BRANCH}."
+          staged="$(g ls-files --stage)"
+          if awk '$1 == "160000" { found = 1 } END { exit !found }' <<< "${staged}"; then
+            fail "The index holds a gitlink (submodule). Submodules are not allowed."
+          fi
+          shas="$(g rev-list "${BASE_SHA}..HEAD")"
+          for sha in ${shas}; do
+            tree="$(g ls-tree -r --full-tree "${sha}")"
+            if awk '$1 == "160000" { found = 1 } END { exit !found }' <<< "${tree}"; then
+              fail "Commit ${sha:0:12} holds a gitlink (submodule). Submodules are not allowed."
+            fi
+          done
+          if [ -n "$(g log --format= --name-only --no-renames --ignore-submodules=all "${BASE_SHA}..HEAD" -- .gitmodules)" ]; then
+            fail "The commits change .gitmodules. Submodules are not allowed."
+          fi
+          [ -z "$(g status --porcelain --ignore-submodules=all)" ] || fail "The builder left uncommitted changes."
+          count="$(g rev-list --count "${BASE_SHA}..HEAD")"
           [ "${count}" -gt 0 ] || fail "The builder made no commits."
-          git bundle create "${RUNNER_TEMP}/agent-out/agent.bundle" "${BASE_SHA}..${BRANCH}"
+          g bundle create "${RUNNER_TEMP}/agent-out/agent.bundle" "${BASE_SHA}..${BRANCH}"
           echo "Bundled ${count} commit(s)."
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -338,6 +403,23 @@ jobs:
             ${{ runner.temp }}/agent-out/plan.md
           if-no-files-found: error
           retention-days: 7
+
+      # 8. actions/checkout's post-job step runs git (`git config`,
+      #    `git submodule foreach`) in the checkout, with the job token among
+      #    its inputs. It stops before running git if .git/config is gone, so
+      #    the checkout Claude modified is deleted here, whatever happened
+      #    after the guard. (If the guard failed, nothing was checked out.)
+      - name: Remove the checkout
+        if: ${{ always() && steps.guard.outputs.guard_ok == 'true' }}
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          chmod -R u+rwX "${GITHUB_WORKSPACE}" 2> /dev/null || true
+          find "${GITHUB_WORKSPACE}" -mindepth 1 -delete
+          if [ -e "${GITHUB_WORKSPACE}/.git" ]; then
+            echo "::error::Could not delete the checkout."
+            exit 1
+          fi
 
   verify:
     needs: build
@@ -361,6 +443,9 @@ jobs:
           path: ${{ runner.temp }}/agent-in
 
       # A bundle carries commits and one ref, nothing else: no hooks, no config.
+      # From here on this checkout holds Claude's commits, so every git call
+      # in verify has fsmonitor and hooks off and never recurses into
+      # submodules, as in build.
       - name: Load the commits from the bundle
         id: load
         env:
@@ -368,21 +453,24 @@ jobs:
         run: |
           set -euo pipefail
           fail() { printf 'reason=%s\n' "$1" >> "${GITHUB_OUTPUT}"; echo "::error::$1"; exit 1; }
+          g() { git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c submodule.recurse=false "$@"; }
           bundle="${RUNNER_TEMP}/agent-in/agent.bundle"
-          git bundle verify "${bundle}" || fail "The commit bundle is not valid."
-          git fetch "${bundle}" "refs/heads/${BRANCH}:refs/heads/${BRANCH}"
-          git switch "${BRANCH}"
-          git merge-base --is-ancestor "${BASE_SHA}" HEAD || fail "The branch does not start from main."
-          echo "head_sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+          g bundle verify "${bundle}" || fail "The commit bundle is not valid."
+          g fetch --no-recurse-submodules "${bundle}" "refs/heads/${BRANCH}:refs/heads/${BRANCH}"
+          g switch --no-recurse-submodules "${BRANCH}"
+          g merge-base --is-ancestor "${BASE_SHA}" HEAD || fail "The branch does not start from main."
+          echo "head_sha=$(g rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
 
       # Every changed path must be listed under the plan's "Files to change":
       # an exact path, or a directory ending in `/`. Globs do not count.
-      # .github/, .claude/, prompts/, cases/, pyproject.toml and uv.lock need
-      # an exact path, or a directory inside that protected one. A `.env` file
-      # is never allowed (`.env.example` follows the normal rule). Renames
-      # count on both sides. Binary changes are refused, since they cannot be
-      # scanned. Paths are printed JSON-quoted, so no path can inject a
-      # workflow command or an output line.
+      # Anything under .github/, .claude/, prompts/ or cases/, and
+      # pyproject.toml and uv.lock, needs its exact file path; a directory
+      # entry never unlocks them. No file whose name starts with `.env` is
+      # allowed, except `.env.example` (which follows the normal rule).
+      # Gitlinks (mode 160000) in any commit and changes to .gitmodules are
+      # refused. Renames count on both sides. Binary changes are refused,
+      # since they cannot be scanned. Paths are printed JSON-quoted, so no
+      # path can inject a workflow command or an output line.
       - name: Check changed paths against the plan
         id: paths
         env:
@@ -413,15 +501,12 @@ jobs:
               return lines
 
 
-          def named(path, entries, protected):
+          def named(path, entries):
               for entry in entries:
                   if any(c in entry for c in "*?["):
                       continue
-                  if entry == path:
+                  if entry == path or (entry.endswith("/") and path.startswith(entry)):
                       return True
-                  if entry.endswith("/") and path.startswith(entry):
-                      if protected is None or entry.startswith(protected):
-                          return True
               return False
 
 
@@ -435,7 +520,9 @@ jobs:
 
 
           def git(*args):
-              return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+              # No text mode: it would turn a lone \r into a line break.
+              cmd = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "submodule.recurse=false", *args]
+              return subprocess.run(cmd, check=True, capture_output=True).stdout.decode("utf-8", "replace")
 
 
           plan = open(os.environ["PLAN"], encoding="utf-8").read()
@@ -449,21 +536,30 @@ jobs:
           print("Plan allows:", json.dumps(entries))
 
           base = os.environ["BASE_SHA"]
-          changed = [p for p in git("diff", "--name-only", "--no-renames", "-z", base, "HEAD").split("\0") if p]
+          changed = [p for p in git("diff", "--name-only", "--no-renames", "--ignore-submodules=all", "-z", base, "HEAD").split("\0") if p]
           problems = []
           for path in changed:
               name = path.rsplit("/", 1)[-1]
-              if name == ".env" or (name.startswith(".env.") and name != ".env.example"):
+              if name.startswith(".env") and name != ".env.example":
                   problems.append(f"{json.dumps(path)} is a .env file")
-              elif path in PROTECTED_FILES:
+              elif path == ".gitmodules":
+                  problems.append(f"{json.dumps(path)} changes submodules, which are not allowed")
+              elif path in PROTECTED_FILES or path.startswith(PROTECTED_DIRS):
                   if path not in entries:
-                      problems.append(f"{json.dumps(path)} is protected and not named in the plan")
-              else:
-                  protected = next((d for d in PROTECTED_DIRS if path.startswith(d)), None)
-                  if not named(path, entries, protected):
-                      kind = "is protected and not named" if protected else "is not listed"
-                      problems.append(f"{json.dumps(path)} {kind} in the plan")
-          for line in git("diff", "--numstat", "--no-renames", base, "HEAD").splitlines():
+                      problems.append(f"{json.dumps(path)} is protected and its exact path is not named in the plan")
+              elif not named(path, entries):
+                  problems.append(f"{json.dumps(path)} is not listed in the plan")
+          # Gitlinks, read from each commit's tree (a diff with
+          # --ignore-submodules would hide them).
+          gitlinks = set()
+          for sha in git("rev-list", f"{base}..HEAD").split():
+              for record in git("ls-tree", "-r", "-z", "--full-tree", sha).split("\0"):
+                  meta, _, path = record.partition("\t")
+                  if meta.split(" ", 1)[0] == "160000":
+                      gitlinks.add(path)
+          for path in sorted(gitlinks):
+              problems.append(f"{json.dumps(path)} is a gitlink (submodule), which is not allowed")
+          for line in git("diff", "--numstat", "--no-renames", "--ignore-submodules=all", base, "HEAD").splitlines():
               if line.startswith("-\t-\t"):
                   problems.append(f"{json.dumps(line[4:])} is a binary change")
           if not changed:
@@ -473,12 +569,18 @@ jobs:
           print("Changed paths are all allowed:", json.dumps(changed))
           EOF
 
-      # Added lines and commit messages, for the same patterns as ship.py plus
-      # the other GitHub token prefixes. `sk-ant-` covers Anthropic API keys
-      # and Claude Code OAuth tokens (sk-ant-oat...). Reports the file and the
-      # kind of match, never the match. No token values are in this job, so
-      # this is a pattern scan only; build compared the values.
-      - name: Scan added lines and commit messages for secrets
+      # Every commit from main to the branch head, one at a time: its message
+      # and every added line of its patch, because publish pushes all the
+      # commits, not only the net diff. Same patterns as ship.py plus the
+      # other GitHub token prefixes. `sk-ant-` covers Anthropic API keys and
+      # Claude Code OAuth tokens (sk-ant-oat...). The patch parser tracks
+      # hunks: `+++ ` is a file header only before a file's first `@@`, so an
+      # added line that starts with `++` is still scanned. Output is read as
+      # bytes and split on \n only, so a \r in a line cannot fake a header.
+      # Reports the commit, the file and the kind of match, never the match.
+      # No token values are in this job, so this is a pattern scan only;
+      # build compared the values.
+      - name: Scan every commit's message and added lines for secrets
         id: secrets
         env:
           BASE_SHA: ${{ needs.build.outputs.base_sha }}
@@ -498,24 +600,42 @@ jobs:
 
 
           def git(*args):
-              return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+              cmd = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "submodule.recurse=false", *args]
+              return subprocess.run(cmd, check=True, capture_output=True).stdout.decode("utf-8", "replace")
+
+
+          def added_lines(patch):
+              path, in_hunk = "?", False
+              for line in patch.split("\n"):
+                  if line.startswith("diff --git "):
+                      path, in_hunk = "?", False
+                  elif not in_hunk:
+                      if line.startswith("+++ "):
+                          path = line[4:].removeprefix("b/")
+                      elif line.startswith("@@"):
+                          in_hunk = True
+                  elif line.startswith("+"):
+                      yield path, line[1:]
+
+
+          def matches(text):
+              return [label for label, pattern in PATTERNS if pattern.search(text)]
 
 
           base = os.environ["BASE_SHA"]
           problems = []
-          current = "?"
-          for line in git("diff", "--no-color", "--no-renames", "--unified=0", base, "HEAD").splitlines():
-              if line.startswith("+++ "):
-                  current = line.removeprefix("+++ ").removeprefix("b/")
-              elif line.startswith("+"):
-                  for label, pattern in PATTERNS:
-                      if pattern.search(line):
-                          problems.append(f"{json.dumps(current)}: added line matches {label}")
-          for sha in git("rev-list", f"{base}..HEAD").split():
-              message = git("log", "-1", "--format=%B", sha)
-              for label, pattern in PATTERNS:
-                  if pattern.search(message):
-                      problems.append(f"commit {sha[:12]} message matches {label}")
+          for sha in git("rev-list", "--reverse", f"{base}..HEAD").split():
+              short = sha[:12]
+              for label in matches(git("log", "-1", "--format=%B", sha)):
+                  problems.append(f"commit {short} message matches {label}")
+              patch = git(
+                  "show", "--format=", "--patch", "--diff-merges=first-parent", "--no-color",
+                  "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all",
+                  "--unified=0", sha,
+              )
+              for path, line in added_lines(patch):
+                  for label in matches(line):
+                      problems.append(f"commit {short} {json.dumps(path)}: added line matches {label}")
           if problems:
               for problem in problems:
                   print(f"::error::{problem}")
@@ -523,7 +643,7 @@ jobs:
               with open(os.environ["GITHUB_OUTPUT"], "a") as out:
                   out.write("reason=" + reason[:1500] + "\n")
               sys.exit(1)
-          print("No secret patterns in added lines or commit messages.")
+          print("No secret patterns in any commit's message or added lines.")
           EOF
 
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
@@ -540,6 +660,21 @@ jobs:
           uv run ruff check . || fail "ruff check failed."
           uv run ruff format --check . || fail "ruff format --check failed."
           uv run pytest || fail "pytest failed."
+
+      # pytest ran Claude's code in this checkout, so it is deleted before
+      # actions/checkout's post-job step can run git in it with the job
+      # token (see the same step in build).
+      - name: Remove the checkout
+        if: ${{ always() }}
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          chmod -R u+rwX "${GITHUB_WORKSPACE}" 2> /dev/null || true
+          find "${GITHUB_WORKSPACE}" -mindepth 1 -delete
+          if [ -e "${GITHUB_WORKSPACE}/.git" ]; then
+            echo "::error::Could not delete the checkout."
+            exit 1
+          fi
 
   publish:
     needs: [build, verify]
@@ -662,7 +797,9 @@ jobs:
 
   report:
     needs: [build, verify, publish]
-    if: ${{ always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
+    # Never after a failed guard: then nothing else in any job runs, the same
+    # as agent-plan.
+    if: ${{ always() && needs.build.outputs.guard_ok == 'true' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
