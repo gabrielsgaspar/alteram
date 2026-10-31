@@ -13,12 +13,11 @@ jobs:
     if: github.event.label.name == 'agent-plan'
     runs-on: ubuntu-26.04
     timeout-minutes: 15
-    # Nothing beyond this. `metadata: read` is listed because GitHub sets every
-    # unlisted permission to none, and the guard below reads collaborator roles.
+    # Nothing beyond this. GITHUB_TOKEN always has metadata read, which is all
+    # the guard below needs to read the collaborator role.
     permissions:
       contents: read
       issues: write
-      metadata: read
     steps:
       # 1. Guard. Runs before anything else; if it fails, no later step runs.
       #    `permission` is admin, write, read or none (maintain counts as write,
@@ -153,6 +152,8 @@ jobs:
               printf '## Agent plan: %s\n\n' "${title}"
               printf '%s\n' "${comment:0:60000}"
               printf '\n\n---\n'
+              # The backticks are literal Markdown for the comment, not a command substitution.
+              # shellcheck disable=SC2016
               printf '_Written by the `agent-plan` workflow. Read-only: it changed no files, labels or settings. [Run](%s)._\n' "${RUN_URL}"
             else
               printf '## Agent plan: no result\n\n'
