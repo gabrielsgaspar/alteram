@@ -89,8 +89,8 @@ jobs:
           EOF
             sudo apparmor_parser -r /etc/apparmor.d/srt-apply-seccomp
           }
-          if [ "${restrict}" = "absent" ] || ! command -v apparmor_parser > /dev/null; then
-            echo "No AppArmor userns restriction on this runner; nothing to do."
+          if [ "${restrict}" != "1" ]; then
+            echo "The AppArmor userns restriction is not on (${restrict}); nothing to do."
             exit 0
           fi
           case "${SETUP}" in
@@ -219,7 +219,7 @@ jobs:
           OS: ${{ matrix.os }}
           SETUP: ${{ matrix.setup }}
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           settings="${RUNNER_TEMP}/srt-settings.json"
           # .claude/settings.json's sandbox rules, plus the working directory
           # (Claude Code adds it to allowWrite) and agent-build's deniedDomains.
