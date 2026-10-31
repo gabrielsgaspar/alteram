@@ -325,8 +325,13 @@ jobs:
           settings="${RUNNER_TEMP}/srt-full.json"; check "agent-build denies (all): true (extra)" 0 "true"
           settings="${RUNNER_TEMP}/srt-full.json"; check "agent-build denies (all): uv run (extra)" 0 "${uvpy}"
           # Same, with Python installed outside every denied path.
+          # As agent-build would do it: UV_PYTHON_INSTALL_DIR for every later
+          # step, Python installed there, .venv rebuilt against it.
           sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/uv-python
-          UV_PYTHON_INSTALL_DIR=/opt/uv-python uv sync --locked > /dev/null 2>&1 || echo "re-sync with /opt/uv-python failed"
+          export UV_PYTHON_INSTALL_DIR=/opt/uv-python
+          rm -rf .venv
+          uv sync --locked --managed-python 2>&1 | tail -n 3
+          echo "venv python now: $(readlink -f .venv/bin/python)"
           settings="${RUNNER_TEMP}/srt-temp.json"; check "denies (uv dirs), Python in /opt: uv run (extra)" 0 "${uvpy}"
           settings="${RUNNER_TEMP}/srt-full.json"; check "denies (all), Python in /opt: uv run (extra)" 0 "${uvpy}"
           settings="${base_settings}"
