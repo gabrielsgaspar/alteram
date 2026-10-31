@@ -1,12 +1,13 @@
 name: Sandbox probe
 
-# Does uv work inside the Claude step's sandbox? Runs `uv run ruff check .`
-# and `uv run pytest -q` through the sandbox runtime Claude Code is built on
-# (@anthropic-ai/sandbox-runtime, CLI `srt`), with the filesystem, network
-# and credential rules agent-build's Claude step ends up with: the repo's
-# .claude/settings.json, the step's `settings`, and its Read deny rules
-# (Claude Code merges Read deny rules into the sandbox). No secrets, no
-# Claude, contents: read only.
+# Runs agent-build's build-job setup, copied text-for-text by a generator
+# (sandbox setup step, job env, uv folders, setup-uv, uv sync), then runs
+# uv inside the sandbox runtime Claude Code is built on
+# (@anthropic-ai/sandbox-runtime, CLI `srt`) with the sandbox config the
+# Build step ends up with, read at run time from agent-build.yml and
+# .claude/settings.json: filesystem, network and credential rules, and the
+# Read deny rules (Claude Code applies them to the sandbox). The sandboxed
+# commands get the Build step's env. No secrets, no Claude, contents: read.
 on:
   push:
     branches: ["probe/**"]
@@ -16,28 +17,22 @@ permissions:
 
 env:
   SRT_VERSION: 0.0.81
+  # agent-build's workflow-level value, overridden by the job env below.
+  UV_CACHE_DIR: /home/runner/.cache/uv
 
 jobs:
   probe:
-    name: ${{ matrix.os }} / ${{ matrix.layout }}
+    name: ${{ matrix.os }} / agent-build setup
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-26.04, ubuntu-24.04]
-        # baseline        as agent-build: Python in setup-uv's _temp dir,
-        #                 cache in ~/.cache/uv
-        # opt             Python in /opt/uv-python, cache in /opt/uv-cache
-        # opt-writable    same, and /opt/uv-cache added to allowWrite (in
-        #                 place of ~/.cache/uv's role); no deny rule changes
-        # Isolating each half of the hypothesis (26.04 only):
-        # python-temp     Python in _temp as baseline; cache /opt/uv-cache, writable
-        # cache-home      Python in /opt/uv-python; cache in ~/.cache/uv as baseline
-        layout: [baseline, opt, opt-writable, python-temp, cache-home]
-        exclude:
-          - {os: ubuntu-24.04, layout: python-temp}
-          - {os: ubuntu-24.04, layout: cache-home}
+    # --- copied from agent-build.yml, build job ---
+    env:
+      UV_PYTHON_INSTALL_DIR: /opt/uv-python
+      UV_CACHE_DIR: /opt/uv-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -47,8 +42,8 @@ jobs:
         with:
           node-version: "22"
 
-      # Outside /home/runner: the merged Read denies hide /home/runner/.*,
-      # where npx would cache it. (Claude Code embeds its own helper.)
+      # Outside /home/runner: the Read denies hide /home/runner/.*, where npx
+      # would cache it. (Claude Code embeds its own helper.)
       - name: Install sandbox-runtime ${{ env.SRT_VERSION }} under /opt/srt
         run: |
           set -euo pipefail
@@ -56,31 +51,7 @@ jobs:
           npm install --prefix /opt/srt --no-audit --no-fund "@anthropic-ai/sandbox-runtime@${SRT_VERSION}"
           npx --prefix /opt/srt --no-install srt --help > /dev/null
 
-      - name: uv folders for layout ${{ matrix.layout }}
-        env:
-          LAYOUT: ${{ matrix.layout }}
-        run: |
-          set -euo pipefail
-          # Created before setup-uv and uv sync, owned by the runner user.
-          opt_python() {
-            sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/uv-python
-            echo "UV_PYTHON_INSTALL_DIR=/opt/uv-python" >> "${GITHUB_ENV}"
-          }
-          opt_cache() {
-            sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/uv-cache
-            echo "UV_CACHE_DIR=/opt/uv-cache" >> "${GITHUB_ENV}"
-          }
-          home_cache() { echo "UV_CACHE_DIR=/home/runner/.cache/uv" >> "${GITHUB_ENV}"; }
-          # No UV_PYTHON_INSTALL_DIR: setup-uv picks _temp/uv-python-dir.
-          case "${LAYOUT}" in
-            baseline) home_cache ;;
-            opt | opt-writable) opt_python; opt_cache ;;
-            python-temp) opt_cache ;;
-            cache-home) opt_python; home_cache ;;
-          esac
-
-      # The agent-build step, copied verbatim (lines 163-241 of
-      # agent-build.yml on main).
+      # --- copied from agent-build.yml, build job ---
       - name: Install sandbox dependencies (bubblewrap, socat)
         run: |
           set -euo pipefail
@@ -108,7 +79,16 @@ jobs:
             nested_ok || return 1
             failed=""
           }
-          write_bwrap_profile() {
+
+          restrict="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
+          echo "kernel.apparmor_restrict_unprivileged_userns: ${restrict}"
+          if [ "${restrict}" = "1" ]; then
+            if [ -f /etc/apparmor.d/bwrap-userns-restrict ]; then
+              echo "Removing bwrap-userns-restrict (it moves bwrap's commands into unpriv_bwrap)."
+              sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict
+              sudo ln -sf /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/
+            fi
+            echo "Loading the documented AppArmor profile for /usr/bin/bwrap."
             sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
           abi <abi/4.0>,
           include <tunables/global>
@@ -118,37 +98,10 @@ jobs:
             include if exists <local/bwrap>
           }
           EOF
-          }
-
-          restrict="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
-          echo "kernel.apparmor_restrict_unprivileged_userns: ${restrict}"
-
-          # a.
-          if ! bwrap_ok && [ "${restrict}" = "1" ]; then
-            echo "bwrap failed; adding the AppArmor profile for /usr/bin/bwrap."
-            write_bwrap_profile
-            sudo systemctl reload apparmor
-          fi
-
-          # b.
-          if ! sandbox_ok && [ "${restrict}" = "1" ]; then
-            echo "The ${failed} user namespace check fails; turning the user namespace restriction off (ephemeral runner)."
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-
-          # c.
-          if ! sandbox_ok && sudo grep -q '^unpriv_bwrap ' /sys/kernel/security/apparmor/profiles; then
-            echo "The ${failed} user namespace check still fails and unpriv_bwrap is loaded; replacing bwrap-userns-restrict with the documented bwrap profile (ephemeral runner)."
-            if [ -f /etc/apparmor.d/bwrap-userns-restrict ]; then
-              sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict
-              sudo ln -sf /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/
-            fi
-            write_bwrap_profile
             sudo apparmor_parser -r /etc/apparmor.d/bwrap
           fi
 
           if ! sandbox_ok; then
-            echo "Restriction now: $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
             echo "AppArmor label of a command bwrap starts: $(bwrap --ro-bind / / --proc /proc --dev /dev --unshare-user --unshare-pid cat /proc/self/attr/current 2>/dev/null || echo unknown)"
             echo "Loaded AppArmor profiles with bwrap in the name:"
             sudo grep -i bwrap /sys/kernel/security/apparmor/profiles || echo "  none"
@@ -160,96 +113,117 @@ jobs:
             exit 1
           fi
           echo "bubblewrap and the nested user namespace work."
+      # --- end of copy ---
 
       - name: ripgrep (srt uses it for denyRead globs; Claude Code bundles its own)
         run: sudo apt-get install -y --no-install-recommends ripgrep
 
-      # Same as agent-build, except cache-local-path follows the layout.
+      # --- copied from agent-build.yml, build job ---
+      - name: uv folders outside the paths the sandbox hides
+        run: sudo install -d -o "$(id -u)" -g "$(id -g)" "${UV_PYTHON_INSTALL_DIR}" "${UV_CACHE_DIR}"
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: false
-          cache-local-path: ${{ (matrix.layout == 'baseline' || matrix.layout == 'cache-home') && '/home/runner/.cache/uv' || '/opt/uv-cache' }}
-      - run: uv sync --locked
+          cache-local-path: /opt/uv-cache
+      - run: uv sync --locked --managed-python
+      # --- end of copy ---
 
       - name: Where uv put things (outside the sandbox)
         run: |
           echo "UV_PYTHON_INSTALL_DIR=${UV_PYTHON_INSTALL_DIR:-unset}"
           echo "UV_CACHE_DIR=${UV_CACHE_DIR:-unset}"
           echo ".venv/bin/python -> $(readlink -f .venv/bin/python)"
-          grep -E '^home' .venv/pyvenv.cfg
-          du -sh "${UV_CACHE_DIR}" 2>/dev/null || true
+
+      # The Build step's sandbox config and env, read from agent-build.yml.
+      - name: srt settings from agent-build.yml and .claude/settings.json
+        run: |
+          set -euo pipefail
+          uv run --no-project --with pyyaml python - "${RUNNER_TEMP}/srt-settings.json" "${RUNNER_TEMP}/sandbox.env" <<'PY'
+          import json, re, shlex, sys
+          import yaml
+
+          settings_out, env_out = sys.argv[1:]
+          wf = yaml.safe_load(open(".github/workflows/agent-build.yml"))
+          step = next(s for s in wf["jobs"]["build"]["steps"] if s.get("name") == "Build")
+          extra = json.loads(step["with"]["settings"])["sandbox"]
+          repo = json.load(open(".claude/settings.json"))
+          rs = repo["sandbox"]
+
+          # Read deny rules: --disallowedTools on the Build step, and the
+          # repo's permissions.deny. Claude's path forms: //abs, ~/home,
+          # ./ or bare = working directory.
+          args = step["with"]["claude_args"]
+          disallowed = next(l for l in args.splitlines() if l.startswith("--disallowedTools"))
+          rules = re.findall(r'"Read\(([^)]*)\)"', disallowed)
+          rules += [r[5:-1] for r in repo["permissions"]["deny"] if r.startswith("Read(")]
+
+          def path(rule):
+              if rule.startswith("//"):
+                  return rule[1:]
+              if rule.startswith(("./", "~/")):
+                  return rule
+              if rule.startswith("/"):
+                  raise SystemExit(f"settings-relative rule not modelled: {rule}")
+              return "./" + rule
+
+          def merged(*lists):
+              out = []
+              for items in lists:
+                  for x in items:
+                      if x not in out:
+                          out.append(x)
+              return out
+
+          fs_repo, fs_extra = rs.get("filesystem", {}), extra.get("filesystem", {})
+          cfg = {
+              "filesystem": {
+                  "denyRead": merged(fs_repo.get("denyRead", []), fs_extra.get("denyRead", []),
+                                     [path(r) for r in rules]),
+                  # Claude Code adds the working directory, and the TMPDIR it
+                  # gives sandboxed commands; srt's TMPDIR is /tmp/claude.
+                  "allowWrite": merged(["."], fs_repo.get("allowWrite", []),
+                                       fs_extra.get("allowWrite", []), ["/tmp/claude"]),
+                  "denyWrite": merged(fs_repo.get("denyWrite", []), fs_extra.get("denyWrite", [])),
+              },
+              "network": {
+                  "allowedDomains": merged(rs.get("network", {}).get("allowedDomains", []),
+                                           extra.get("network", {}).get("allowedDomains", [])),
+                  "deniedDomains": merged(rs.get("network", {}).get("deniedDomains", []),
+                                          extra.get("network", {}).get("deniedDomains", [])),
+              },
+              "credentials": extra["credentials"],
+          }
+          json.dump(cfg, open(settings_out, "w"), indent=2)
+          # The Build step's env, which sandboxed commands inherit. The scrub
+          # flag means nothing to srt.
+          with open(env_out, "w") as f:
+              for k, v in step.get("env", {}).items():
+                  if not k.startswith("CLAUDE_CODE_"):
+                      f.write(f"export {k}={shlex.quote(str(v))}\n")
+          PY
+          cat "${RUNNER_TEMP}/srt-settings.json"; echo
+          cat "${RUNNER_TEMP}/sandbox.env"
 
       - name: Probe through srt
         env:
           OS: ${{ matrix.os }}
-          LAYOUT: ${{ matrix.layout }}
         run: |
           set +e -uo pipefail
           settings="${RUNNER_TEMP}/srt-settings.json"
-          # Claude Code gives sandboxed commands their own TMPDIR under /tmp
-          # and adds it to allowWrite; this mimics that.
-          sandbox_tmp="/tmp/claude-$(id -u)"
-          mkdir -p "${sandbox_tmp}"
-          python3 - "${settings}" "${LAYOUT}" "${sandbox_tmp}" <<'PY'
-          import json, sys
-          dst, layout, tmp = sys.argv[1:]
-          deny_read = [
-              # .claude/settings.json: sandbox.filesystem.denyRead and the
-              # permissions.deny Read rules (the same .env paths)
-              "./.env", "./.env.local", "./.env.production", "./**/.env",
-              # agent-build Claude step: --disallowedTools Read(...) rules,
-              # in the form Claude Code passes them on
-              "./.git/config", "/proc/**", "/etc/**", "/root/**", "/tmp/**",
-              "/home/runner/.*", "/home/runner/.*/**",
-              "/home/runner/work/_temp/**", "/home/runner/work/_actions/**",
-              "/home/runner/work/_tool/**", "/home/runner/runners/**",
-          ]
-          allow_write = [".", "~/.cache/uv", tmp]
-          if layout in ("opt-writable", "python-temp"):
-              allow_write.append("/opt/uv-cache")
-          deny_env = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "GITHUB_TOKEN",
-                      "GH_TOKEN", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
-          cfg = {
-              "filesystem": {"denyRead": deny_read, "allowWrite": allow_write, "denyWrite": []},
-              "network": {
-                  "allowedDomains": ["pypi.org", "files.pythonhosted.org", "github.com", "api.github.com"],
-                  "deniedDomains": ["github.com", "api.github.com"],
-              },
-              "credentials": {
-                  "envVars": [{"name": n, "mode": "deny"} for n in deny_env],
-                  "files": [{"path": "~/.claude/.credentials.json", "mode": "deny"},
-                            {"path": "~/.claude.json", "mode": "deny"}],
-              },
-          }
-          json.dump(cfg, open(dst, "w"), indent=2)
-          PY
-          echo "::group::srt settings"; cat "${settings}"; echo; echo "::endgroup::"
+          # shellcheck disable=SC1091
+          . "${RUNNER_TEMP}/sandbox.env"
           # A planted secret: synthetic, only to prove denyRead holds.
           echo "PROBE_CANARY=not-a-secret" > .env
 
-          srt() { TMPDIR="${sandbox_tmp}" npx --prefix /opt/srt --no-install srt --settings "${settings}" "$@"; }
-          # offline: UV_PYTHON_DOWNLOADS=never UV_OFFLINE=1 in the environment
-          # the sandboxed command inherits, as a Claude step env would give it.
-          run_srt() {
-            if [ "$1" = offline ]; then
-              UV_PYTHON_DOWNLOADS=never UV_OFFLINE=1 srt -c "$2"
-            else
-              srt -c "$2"
-            fi
-          }
-          show() {
-            echo "::group::evidence: $1"
-            run_srt offline "$2" 2>&1 | tail -n 40
-            echo "::endgroup::"
-          }
+          srt() { npx --prefix /opt/srt --no-install srt --settings "${settings}" "$@"; }
           results=""
           fails=0
           # expect 0: must succeed. expect 1: an enforcement check, passes only
           # if the sandboxed shell started and then the denied action failed.
           check() {
-            local label="$1" expect="$2" mode="$3" cmd="$4" out rc verdict
+            local label="$1" expect="$2" cmd="$3" out rc verdict
             if [ "${expect}" = 1 ]; then cmd="echo SRT_STARTED; ${cmd}"; fi
-            out="$(run_srt "${mode}" "${cmd}" 2>&1)"; rc=$?
+            out="$(srt -c "${cmd}" 2>&1)"; rc=$?
             if { [ "${expect}" = 0 ] && [ "${rc}" = 0 ]; } ||
                { [ "${expect}" = 1 ] && [ "${rc}" != 0 ] && grep -q '^SRT_STARTED$' <<< "${out}"; }; then
               verdict=pass
@@ -259,29 +233,26 @@ jobs:
             echo "::group::${label}: ${verdict} (exit ${rc})"
             printf '%s\n' "${out}" | tail -n 25
             echo "::endgroup::"
-            echo "RESULT|${OS}|${LAYOUT}|${label}|${verdict}|${rc}"
+            echo "RESULT|${OS}|${label}|${verdict}|${rc}"
             results="${results}| ${label} | ${verdict} | ${rc} |"$'\n'
           }
 
-          # Evidence: what uv sees inside the sandbox.
-          show "environment" 'env | grep -E "^(UV_|TMPDIR=)" | sort'
-          show "venv interpreter" 'ls -l .venv/bin/python; p="$(readlink -f .venv/bin/python)"; echo "resolves to: $p"; ls -l "$p"; cat .venv/pyvenv.cfg'
-          show "Python install dir" 'd="${UV_PYTHON_INSTALL_DIR:-unset}"; echo "$d"; ls -la "$d"'
-          show "cache dir" 'echo "$UV_CACHE_DIR"; ls -la "$UV_CACHE_DIR" | head -n 8; touch "$UV_CACHE_DIR/.probe-write" && echo "cache writable" && rm -f "$UV_CACHE_DIR/.probe-write"'
-          show "uv -v run (interpreter discovery)" 'uv -v run python -c "import sys; print(sys.executable)" 2>&1 | grep -v -E "^\s*$" | head -n 40'
-
-          check "as Claude ran it: uv run pytest -q" 0 plain "uv run pytest -q"
-          check "offline: uv run ruff check ." 0 offline "uv run ruff check ."
-          check "offline: uv run pytest -q" 0 offline "uv run pytest -q"
-          check "offline: uv sync (allowed for Claude)" 0 offline "uv sync"
-          check "enforced: .env unreadable" 1 offline "cat .env"
-          check "enforced: _temp hidden" 1 offline 'test -n "$(ls -A /home/runner/work/_temp)"'
-          check "enforced: home dotdirs hidden (~/.npm)" 1 offline 'test -n "$(ls -A /home/runner/.npm 2>/dev/null)"'
-          check "enforced: github.com denied" 1 offline "curl -sS --max-time 10 -o /dev/null https://github.com"
-          check "enforced: no nested userns" 1 offline "unshare --user true"
+          check "env inside the sandbox" 0 'env | grep -E "^(UV_|TMPDIR=)" | sort'
+          check "venv interpreter readable" 0 'p="$(readlink -f .venv/bin/python)"; echo "$p"; test -x "$p"'
+          check "uv run ruff check ." 0 "uv run ruff check ."
+          check "uv run ruff format --check ." 0 "uv run ruff format --check ."
+          check "uv run pytest -q" 0 "uv run pytest -q"
+          check "uv sync (allowed for Claude)" 0 "uv sync"
+          check "enforced: .env unreadable" 1 "cat .env"
+          check "enforced: _temp hidden" 1 'test -n "$(ls -A /home/runner/work/_temp)"'
+          check "enforced: home dotdirs hidden (~/.npm)" 1 'test -n "$(ls -A /home/runner/.npm 2>/dev/null)"'
+          check "enforced: .git/config unreadable" 1 "cat .git/config"
+          check "enforced: github.com denied" 1 "curl -sS --max-time 10 -o /dev/null https://github.com"
+          check "enforced: no nested userns" 1 "unshare --user true"
+          check "enforced: no Python download" 1 "uv python install 3.11"
 
           {
-            echo "### ${OS} / ${LAYOUT}"
+            echo "### ${OS}"
             echo "| check | result | exit |"
             echo "| --- | --- | --- |"
             printf '%s' "${results}"
