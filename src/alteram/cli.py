@@ -1,4 +1,4 @@
-"""Command line: `alteram run`, `swap`, `rejudge` and `eval`."""
+"""Command line: `alteram run`, `swap`, `rejudge`, `eval` and `cases`."""
 
 import argparse
 import os
@@ -43,6 +43,7 @@ from alteram.loader import load_case
 from alteram.models import (
     AgentCall,
     Argument,
+    Case,
     JudgeOrder,
     RejudgeRun,
     RejudgeStats,
@@ -263,6 +264,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     comparison.add_argument("a", type=Path)
     comparison.add_argument("b", type=Path)
     comparison.add_argument("--seed", type=int, default=0, help="bootstrap seed")
+    cases = commands.add_parser("cases", help="list the cases in cases/")
+    cases_commands = cases.add_subparsers(dest="cases_command", required=True)
+    cases_commands.add_parser("list", help="one line per case: id, kind, title")
     args = parser.parse_args(argv)
     if args.command in ("swap", "rejudge") and args.repeats < 1:
         parser.error("--repeats must be at least 1")
@@ -300,6 +304,20 @@ def rejudge_command(
     print(format_rejudge(rejudge))
     path = save_with_events(rejudge, events, runs_dir, case.id, f"{stamp}-rejudge")
     print(f"\nSaved to {path}")
+    return 0
+
+
+def format_case_line(case: Case) -> str:
+    return f"{case.id}  {case.kind:<12}  {case.title}"  # never `expected`
+
+
+def cases_command(cases_dir: Path) -> int:
+    cases = [load_case(path) for path in sorted(cases_dir.glob("*.md"))]
+    if not cases:
+        print(f"No cases found in {cases_dir}", file=sys.stderr)
+        return 2
+    for case in sorted(cases, key=lambda c: c.id):
+        print(format_case_line(case))
     return 0
 
 
@@ -396,6 +414,8 @@ def main(
     eval_dir: Path = Path("eval"),
 ) -> int:
     args = parse_args(argv)
+    if args.command == "cases":  # needs no env, budget or model
+        return cases_command(cases_dir)
     load_dotenv()
     if args.command == "eval":
         return eval_command(args, chat_model, runs_dir, eval_dir)
