@@ -1,5 +1,6 @@
 """CLI and swap tests with fake chat models only: no network, no .env."""
 
+import importlib.metadata
 import re
 from collections import Counter
 from pathlib import Path
@@ -36,6 +37,24 @@ def env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def saved(runs_dir: Path) -> list[Path]:
     return list(runs_dir.rglob("*.json"))
+
+
+def test_version_prints_package_version_and_exits_zero(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def no_model(*args: object) -> None:
+        raise AssertionError("--version must not build a model")
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--version"], no_model)
+    assert exc.value.code == 0
+    assert importlib.metadata.version("alteram") in capsys.readouterr().out
+
+
+def test_run_help_does_not_list_version(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["run", "--help"])
+    assert "--version" not in capsys.readouterr().out
 
 
 def test_run_saves_valid_run_with_windows_safe_name(tmp_path: Path) -> None:
