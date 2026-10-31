@@ -52,6 +52,12 @@ jobs:
           echo "APPLY_SECCOMP=${seccomp}" >> "${GITHUB_ENV}"
           echo "apply-seccomp: ${seccomp}"
 
+      - name: Stock AppArmor policy for bwrap, before any setup
+        run: |
+          for f in /etc/apparmor.d/bwrap /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/unprivileged_userns; do
+            echo "::group::${f}"; grep -v -E '^\s*(#|$)' "${f}" 2>/dev/null || echo "(absent)"; echo "::endgroup::"
+          done
+
       - name: Base packages (ripgrep for srt's denyRead globs; Claude Code bundles its own)
         run: |
           set -euo pipefail
@@ -271,12 +277,25 @@ jobs:
           check "pypi.org reachable" 0 "curl -sS --max-time 10 -o /dev/null https://pypi.org/simple/"
           check "uv run python (extra)" 0 "uv run --locked python -c 'import alteram, sys; print(sys.version)'"
 
-          # Emulation of the scrub's PID namespace from an unconfined process
-          # outside the sandbox (as Claude Code's own process would be).
-          if unshare --user --map-current-user --pid --mount --fork --mount-proc true 2> "${RUNNER_TEMP}/scrub.err"; then v=pass; else v=FAIL; fi
-          echo "RESULT|${OS}|${SETUP}|scrub-pidns emulation (outside srt)|${v}|-"
-          [ "${v}" = pass ] || cat "${RUNNER_TEMP}/scrub.err"
-          results="${results}| scrub-pidns emulation (outside srt) | ${v} | - |"$'\n'
+          check "uv run, UV_PYTHON_INSTALL_DIR unset (extra)" 0 "env -u UV_PYTHON_INSTALL_DIR uv run --locked python -c 'import alteram'"
+
+          # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB isolates Bash with bubblewrap
+          # (Claude Code 2.1.316: "bubblewrap is required for subprocess env
+          # scrubbing and isolation"). Two approximations, not Claude Code
+          # itself: (a) a scrub-style bwrap alone; (b) pessimistic, the srt
+          # sandbox nested inside such a bwrap.
+          extra() {
+            local label="$1" v out
+            shift
+            if out="$("$@" 2>&1)"; then v=pass; else v=FAIL; fi
+            echo "::group::${label}: ${v}"; printf '%s\n' "${out}" | tail -n 8; echo "::endgroup::"
+            echo "RESULT|${OS}|${SETUP}|${label}|${v}|-"
+            results="${results}| ${label} | ${v} | - |"$'\n'
+          }
+          scrub_bwrap=(bwrap --new-session --die-with-parent --dev-bind / / --dev /dev --proc /proc --unshare-user --unshare-pid)
+          extra "scrub-style bwrap (approx.)" "${scrub_bwrap[@]}" true
+          extra "srt inside scrub-style bwrap (pessimistic)" "${scrub_bwrap[@]}" \
+            bash -c "cd '${PWD}' && npx --no-install '@anthropic-ai/sandbox-runtime@${SRT_VERSION}' --settings '${settings}' -c true"
 
           if [ "${fails}" != 0 ]; then
             echo "::group::srt --debug true"
