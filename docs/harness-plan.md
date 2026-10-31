@@ -158,14 +158,14 @@ From PowerShell:
 wsl.exe -- bash -lic 'cd ~/projects/alteram && git pull --ff-only && bash scripts/ship-herdr.sh task tasks/<name>.md'
 ```
 
-## GitHub flow: issue → plan comment → build PR
+## GitHub flow: issue → plan comment → build PR → review comment
 
-A second, GitHub-side entry point in two stages. `agent-plan` only plans. Once a person has read the plan, `agent-build` implements it and opens a PR. Nothing in it merges.
+A second, GitHub-side entry point in three stages. `agent-plan` only plans. Once a person has read the plan, `agent-build` implements it and opens a PR. When CI passes on that PR, `agent-review` posts one advisory review comment and a label. Nothing in it approves or merges.
 
 ### Plan: agent-plan label → plan comment
 
 1. Someone opens an issue from the **Agent task** template (`.github/ISSUE_TEMPLATE/agent-task.md`). It has the same sections as `tasks/TEMPLATE.md`: Goal, In scope, Out of scope, Done when.
-2. A person with admin or write access adds the `agent-plan` label. Run `bash scripts/create_labels.sh` once to create `agent-plan`, `agent-build` and `needs-human`; it is safe to run again.
+2. A person with admin or write access adds the `agent-plan` label. Run `bash scripts/create_labels.sh` once to create `agent-plan`, `agent-build`, `needs-human` and `agent-approved`; it is safe to run again.
 3. `.github/workflows/agent-plan.yml` runs on `issues: labeled` and nothing else. A guard step checks the repo permission of both the labelling user and the issue author first, and stops if either is not admin or write, or if the lookup fails.
 4. Claude (Opus, read-only: `Read`, `Grep`, `Glob`, and `git log`) reads `AGENTS.md`, the design docs and the issue, and returns a structured result. A later step posts it as **one comment** on the issue: a plan (files, steps, risks, a "Done when" checklist that needs no paid API calls), or a plain statement that the issue is unclear or out of scope under `AGENTS.md`. Before posting, that step refuses to continue if the comment contains either token value or a `sk-ant-`, `ghp_`, `ghs_` or `github_pat_` string.
 
@@ -178,7 +178,7 @@ The issue text is treated as data, not instructions. Reads are fenced to the che
    - **verify** (no secrets, fresh checkout): Every check runs on every commit from main to the head, one at a time, not only on the net diff, because publish pushes all of them: a change made in one commit and undone in the next is still in the pushed history. A merge commit is read against its first parent. First, a secret scan of each commit: the raw commit object (author, committer, other headers, message; a commit with an `encoding` header or a NUL byte is refused, since a UTF-16 message would hide a match), every changed file name, and every added line of its patch made with `git show --text`, so neither a binary file nor a `-diff` attribute can hide content. Patterns: `sk-ant-` (Anthropic keys and Claude Code OAuth tokens), `lsv2_`, `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`, `github_pat_`, PEM headers (so a signed commit fails too), and long `KEY=`/`TOKEN=` values. It runs before the path check so that no step prints a file name holding a token. Then the path check: every path any commit changes must be listed under the plan's "Files to change", as an exact path or a directory ending in `/`. Files under `.github/`, `.claude/`, `prompts/` and `cases/`, `pyproject.toml` and `uv.lock`, and any `.gitattributes` need their exact file path; a directory entry never unlocks them. No file whose name starts with `.env` is allowed except `.env.example`. Gitlinks, `.gitmodules` changes and binary changes in any commit are refused. Each problem names the first commit that has it. Then `ruff check`, `ruff format --check` and `pytest`.
    - **publish**: Runs no repository code. It checks the bundle is the one verify passed, then pushes with a one-hour token from our own GitHub App (no force, hooks off). It opens a PR titled from the issue, whose body holds `Closes #<n>`, the plan's "Done when" list and a run link.
    - **report**: If any job failed after the guard passed, it posts one short comment on the issue and adds `needs-human`. A failed guard posts nothing, the same as agent-plan.
-6. CI runs on the PR, because an App token, unlike `GITHUB_TOKEN`, starts workflows. A person reviews and merges. To run the build again, delete the branch or close its PR, then remove and re-add the label.
+6. CI runs on the PR, because an App token, unlike `GITHUB_TOKEN`, starts workflows. When it passes, `agent-review` comments (see Review below). A person reviews and merges. To run the build again, delete the branch or close its PR, then remove and re-add the label.
 
 Permissions per job: build `contents: read` and `issues: read`; verify and publish `contents: read`; report `issues: write`. No job has `id-token`. The App token has only contents and pull-requests write, on this repo only.
 
@@ -203,4 +203,59 @@ The job token Claude can see is read-only on a public repo. Anything Claude comm
 
 **One-time setup** (repo admin): create a GitHub App with repository permissions Contents and Pull requests read and write, and nothing else. Install it on this repository only. Add its client ID as the Actions variable `AGENT_APP_CLIENT_ID` and a private key as the secret `AGENT_APP_PRIVATE_KEY`.
 
-How it relates to the local ship tool: `ship.py` runs a builder and a reviewer and can merge. `agent-build` has no reviewer and never merges. Its PR is reviewed by a person, or locally with `scripts/ship.py branch agent/issue-<n> --task tasks/<name>.md`.
+### Review: CI passes → review comment
+
+7. `.github/workflows/agent-review.yml` runs on `workflow_run` when the CI workflow completes for a branch matching `agent/**`. It has two jobs, `review` and `post`. The comment is advisory: nothing in this stage approves, merges, pushes or loops back to the builder.
+
+**Why `workflow_run` and not `pull_request`.**
+- **Which file runs:** `pull_request` runs the workflow file from the PR's merge commit, so a PR (or anyone with write access who pushes to the branch) could rewrite the guard. `workflow_run` always runs the default branch's copy, and only once the file is on `main` ([events: workflow_run](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run), [securely using pull_request_target](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)).
+- **The price is secrets:** `workflow_run` "is able to access secrets and write tokens, even if the previous workflow was not", fork PRs included. That is the "pwn request" risk: a privileged workflow that checks out or downloads untrusted PR code and runs it ([Security Lab](https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/), [secure use](https://docs.github.com/en/actions/reference/security/secure-use#mitigating-the-risks-of-untrusted-code-checkout)).
+- **What we do about it:** the job condition and the guard keep to same-repo `agent/` branches pushed only by our App. No step checks out, builds or runs PR code, and no CI artifact or cache is used. The change reaches Claude only as a diff file from the compare API, and tests are trusted from CI's result.
+
+**review** (`contents: read` for the merge-base checkout and the compare and activity APIs; `pull-requests: read` to find the PR; `issues: read` for the issue, plan comment and label events; `checks: read` for the `test` runs):
+- **Job condition:** CI's run came from a `pull_request` event (CI also runs on `push`, so this avoids two reviews per commit), the head repository is this one, and the branch starts with `agent/`.
+- **Guard first.** It fails silently, as in the other agent workflows. It checks that:
+  - CI was started by `alteram-agent[bot]`, or re-run by someone with admin or write;
+  - there is exactly one open PR from this same-repo branch to `main`, opened by the App, whose head is the commit CI tested. The pulls API ignores a `head` filter it does not recognise, so the match is checked locally;
+  - the branch activity API shows only `push` and `branch_creation` by the App (no other pusher, no force push), and the newest push is the tested commit;
+  - the branch is `agent/issue-<n>`, and the issue's author and whoever last added `agent-build` have admin or write.
+- **Wait for CI.** Every `test` check run on the head commit from GitHub Actions (app 15368, the check the `protect-main` ruleset requires) must finish and pass. The step polls for up to 10 minutes, because the `push`-event run may still be going. If CI failed, Claude does not run.
+- **Data**, all from the API into `.agent-review/`:
+  - the issue (`issue.md`, context only);
+  - the newest `## Agent plan: Plan` comment (`plan.md`), with the same edited-after check as agent-build, and it must be older than the PR;
+  - its "Done when" items with ids D1, D2, … (`done-when.json`);
+  - the diff of `main...<tested sha>` (`pr.diff`, at most 500 KB and fewer than 300 files);
+  - CI's result (`ci.md`).
+- **Path check in code**, with verify's rules: every changed path (both sides of a rename) must be under the plan's "Files to change". The checkout is the merge base (a commit on `main`), so `AGENTS.md`, `CLAUDE.md` and `.claude/settings.json` are main's and the diff applies to what Claude reads.
+- **Claude** (Opus, `claude-opus-5-5`, read-only) has agent-plan's tools (`Read`, `Grep`, `Glob`, `Bash(git log *)`), Read deny rules, sandbox setup and subprocess scrub. It also gets four things from agent-build:
+  - the deny on `Read(./.git/config)`;
+  - the sandbox `credentials` block;
+  - github.com and api.github.com denied for Bash;
+  - `classify_inline_comments: "false"`.
+
+  `allowed_bots: alteram-agent[bot]` is needed because the action refuses bot actors. It returns `{verdict, must_fix[], nice_to_have[], checked[]}`, with each `checked` entry holding an id, a status (`verified`, `not_met` or `not_verifiable_without_running_code`) and how it was checked.
+- **Verdict rules, applied in code.** The path check's problems are added to `must_fix`. The result is `approve` only if the model said `approve`, `checked` has every Done when id, none is `not_met`, and `must_fix` is empty. Otherwise it is `changes`, and the comment says why it was overruled. The prompt also tells Claude to put files outside the plan and any clear correctness or quality problem in `must_fix`, even when every item is verified. `not_verifiable_without_running_code` does not block an approval; the comment shows it.
+- **Secret check.** The step that builds the comment holds both token values and runs no git. It refuses the comment if either value or a token prefix (`sk-ant-`, `lsv2_`, `gh[pousr]_`, `github_pat_`, `-----BEGIN`) is in it.
+
+**post** (`issues: write` for one comment and our labels, since PRs are issues; `pull-requests: read` to re-read the head):
+- **After the review:** it posts one comment with `GITHUB_TOKEN`, as github-actions[bot]: the verdict, the reviewed commit, the Done when table, Must fix and Nice to have. It adds `agent-approved` or `needs-human` and removes the other.
+- **After a failure past the guard** (CI failed, the plan or diff could not be read, an unusable result): a short "stopped" comment and `needs-human`.
+- **After a failed guard on a matched PR** (for example a push by someone other than the App): it only removes `agent-approved`, with no comment.
+- **Stale runs:** it skips posting if the PR has moved to a newer commit, since that commit's CI run starts its own review.
+
+**Why `GITHUB_TOKEN` and not our App.**
+- **No approval.** Creating a review needs Pull requests write and merging needs Contents write ([permissions for Apps](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps)), and the poster has neither. The repo setting "Allow GitHub Actions to create and approve pull requests" is also off.
+- **No merge.** The `protect-main` ruleset needs 0 approvals plus `test`, so any token with Contents write could merge a green agent PR. The App's token has Contents write.
+- **No loops.** Events made with `GITHUB_TOKEN` start no workflows ([GITHUB_TOKEN](https://docs.github.com/en/actions/concepts/security/github_token)), so the label and comment cannot trigger anything.
+- **Separate roles.** The builder and the reviewer are different identities.
+
+**Limits.**
+- **It only runs from `main`.** To try it after merging, re-run the `pull_request`-event CI run of an open agent PR.
+- **Unverified:** `issues: write` alone should comment on and label a PR with `GITHUB_TOKEN`. The REST tables accept Issues *or* Pull requests write for both endpoints, but this has not been seen working yet. If it fails, the fix is `pull-requests: write`, which still cannot merge; approving stays blocked by the repo setting.
+- **Prompt injection in the diff could produce an `approve`.** `agent-approved` is a signal, not a merge gate, and a person still reviews and merges.
+- **Hard-coded names:** the App's bot login (`alteram-agent[bot]`) and GitHub Actions' app id (15368) are written into the workflow.
+- **Activity API timing:** the guard trusts it to record a push before CI finishes. If it lags, the guard fails and nothing is posted; re-run CI.
+- **The sandbox setup step is now copied in three workflows.** A shared composite action would remove the copies, but that is its own change.
+- **To do: give agent-plan the same `sandbox.credentials` block and github.com / api.github.com deny as agent-build and agent-review.** It has neither today.
+
+How it relates to the local ship tool: `ship.py` runs a builder and a reviewer and can merge. `agent-build` never merges, and `agent-review` only comments. A person reviews the PR, or locally with `scripts/ship.py branch agent/issue-<n> --task tasks/<name>.md`.
