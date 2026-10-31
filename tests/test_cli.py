@@ -4,6 +4,7 @@ import importlib.metadata
 import re
 from collections import Counter
 from pathlib import Path
+from typing import get_args
 
 import pytest
 from test_graph import JUDGE_MODEL, LAWYER_MODEL, VERDICT, factory, fakes, reply
@@ -16,6 +17,7 @@ from alteram.models import (
     AgentCall,
     FailedRun,
     JudgeResult,
+    Kind,
     Run,
     SwapRun,
     Verdict,
@@ -352,7 +354,7 @@ def test_cases_list_matches_the_loader(
         case_id, kind, title = re.fullmatch(r"(\S+) +(\S+) +(.+)", line).groups()
         assert (case_id, kind, title) == (case.id, case.kind, case.title)
         assert "expected" not in line.split(title)[0]
-        assert case.expected not in (case_id, kind)
+        assert line.endswith(case.title)
 
 
 def test_cases_list_never_prints_expected_and_sorts_by_id(
@@ -374,12 +376,26 @@ def test_cases_list_without_cases_exits_two(
     assert "No cases found" in capsys.readouterr().err
 
 
-def test_top_level_help_lists_cases_but_run_help_does_not(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+def test_top_level_help_lists_cases(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         cli.main(["--help"])
     assert "cases" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", ["run", "swap", "rejudge", "eval"])
+def test_subcommand_help_does_not_list_cases_as_a_subcommand(
+    command: str, capsys: pytest.CaptureFixture[str]
+) -> None:
     with pytest.raises(SystemExit):
-        cli.main(["run", "--help"])
-    assert "cases" not in capsys.readouterr().out
+        cli.main([command, "--help"])
+    out = capsys.readouterr().out
+    for group in re.findall(r"\{([^}]*)\}", out):
+        assert "cases" not in group.split(",")
+    for line in out.splitlines():
+        assert line.split()[:1] != ["cases"]
+
+
+def test_kind_width_fits_the_longest_kind() -> None:
+    assert cli.KIND_WIDTH == max(len(k) for k in get_args(Kind))
+    case = load_case(CASE_001).model_copy(update={"kind": "missing-fact"})
+    assert cli.format_case_line(case) == f"{case.id}  missing-fact  {case.title}"
