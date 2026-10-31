@@ -63,32 +63,35 @@ jobs:
       #     - nested: inside it, apply-seccomp (sandbox-runtime's helper, run
       #       before each sandboxed command) makes a second user namespace and
       #       needs CAP_SYS_ADMIN there to create new PID and mount namespaces.
-      #       On Linux, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB also runs Bash in its
-      #       own PID namespace. https://code.claude.com/docs/en/env-vars
+      #       CLAUDE_CODE_SUBPROCESS_ENV_SCRUB's isolation is bubblewrap too.
+      #       https://code.claude.com/docs/en/env-vars
       #       https://github.com/anthropic-experimental/sandbox-runtime (README,
       #       "Ubuntu 24.04+ note"; vendor/seccomp-src/apply-seccomp.c)
-      #     Ubuntu 24.04 and later let a process with no AppArmor profile create
-      #     a user namespace but take every capability away inside it, so the
-      #     nested one fails even when bwrap itself has a profile.
-      #     https://documentation.ubuntu.com/release-notes/24.04/
-      #     https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces
-      #     Fixes in order, re-checking after each:
-      #       a. outer fails: the documented AppArmor profile for bwrap;
-      #       b. either fails: turn the restriction off for the whole runner
-      #          (kernel.apparmor_restrict_unprivileged_userns=0);
-      #       c. either still fails and Ubuntu's bwrap-userns-restrict policy is
-      #          loaded (it moves bwrap's commands into unpriv_bwrap, which
-      #          denies every capability): disable it and load the documented
-      #          profile instead.
-      #     b and c are acceptable only because the runner is ephemeral: the VM
-      #     is discarded after the job, and the runner user already has
-      #     passwordless sudo, so the restriction guards nothing there that sudo
-      #     does not already allow. Inside the sandbox, commands still cannot
-      #     make user namespaces (apply-seccomp's seccomp filter and
-      #     user.max_user_namespaces=0) or use sudo (bwrap sets no_new_privs).
-      #     The sandbox and the scrub stay on; settings.json is untouched. If a
-      #     check still fails, the step stops here with the reason, instead of
-      #     Claude failing every Bash call later.
+      #     What the runners need, from the probe on branch probe/sandbox
+      #     (sandbox-runtime 0.0.81 with our rules; runs 41223056223 and
+      #     41223897114):
+      #     - ubuntu-22.04: kernel.apparmor_restrict_unprivileged_userns is 0;
+      #       nothing to do.
+      #     - ubuntu-24.04: it is 1 and no bwrap profile ships, so bwrap itself
+      #       fails ("setting up uid map: Permission denied").
+      #     - ubuntu-26.04: it is 1 and bwrap-userns-restrict ships. Its bwrap
+      #       profile moves every command bwrap starts into unpriv_bwrap
+      #       ("audit deny capability"), so the nested check fails
+      #       ("write /proc/self/setgroups ... Permission denied"). Setting the
+      #       sysctl to 0 does not change that transition (still fails), so the
+      #       old sysctl fallback is gone.
+      #     So, when the restriction is on: unload and disable
+      #     bwrap-userns-restrict if present, and load the documented bwrap
+      #     profile. Both checks then pass on 24.04 and 26.04 with the
+      #     restriction still on for every other program. Acceptable because
+      #     the runner is ephemeral (the VM is discarded after the job) and the
+      #     runner user already has passwordless sudo. Inside the sandbox,
+      #     commands still cannot make user namespaces (apply-seccomp's filter
+      #     and user.max_user_namespaces=0; the probe's `unshare --user` was
+      #     refused) or use sudo (bwrap sets no_new_privs). The sandbox and the
+      #     scrub stay on; settings.json is untouched. If a check still fails,
+      #     the step stops here with the reason, instead of Claude failing
+      #     every Bash call later.
       - name: Install sandbox dependencies (bubblewrap, socat)
         run: |
           set -euo pipefail
@@ -116,7 +119,16 @@ jobs:
             nested_ok || return 1
             failed=""
           }
-          write_bwrap_profile() {
+
+          restrict="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
+          echo "kernel.apparmor_restrict_unprivileged_userns: ${restrict}"
+          if [ "${restrict}" = "1" ]; then
+            if [ -f /etc/apparmor.d/bwrap-userns-restrict ]; then
+              echo "Removing bwrap-userns-restrict (it moves bwrap's commands into unpriv_bwrap)."
+              sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict
+              sudo ln -sf /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/
+            fi
+            echo "Loading the documented AppArmor profile for /usr/bin/bwrap."
             sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
           abi <abi/4.0>,
           include <tunables/global>
@@ -126,37 +138,10 @@ jobs:
             include if exists <local/bwrap>
           }
           EOF
-          }
-
-          restrict="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
-          echo "kernel.apparmor_restrict_unprivileged_userns: ${restrict}"
-
-          # a.
-          if ! bwrap_ok && [ "${restrict}" = "1" ]; then
-            echo "bwrap failed; adding the AppArmor profile for /usr/bin/bwrap."
-            write_bwrap_profile
-            sudo systemctl reload apparmor
-          fi
-
-          # b.
-          if ! sandbox_ok && [ "${restrict}" = "1" ]; then
-            echo "The ${failed} user namespace check fails; turning the user namespace restriction off (ephemeral runner)."
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-
-          # c.
-          if ! sandbox_ok && sudo grep -q '^unpriv_bwrap ' /sys/kernel/security/apparmor/profiles; then
-            echo "The ${failed} user namespace check still fails and unpriv_bwrap is loaded; replacing bwrap-userns-restrict with the documented bwrap profile (ephemeral runner)."
-            if [ -f /etc/apparmor.d/bwrap-userns-restrict ]; then
-              sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict
-              sudo ln -sf /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/
-            fi
-            write_bwrap_profile
             sudo apparmor_parser -r /etc/apparmor.d/bwrap
           fi
 
           if ! sandbox_ok; then
-            echo "Restriction now: $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
             echo "AppArmor label of a command bwrap starts: $(bwrap --ro-bind / / --proc /proc --dev /dev --unshare-user --unshare-pid cat /proc/self/attr/current 2>/dev/null || echo unknown)"
             echo "Loaded AppArmor profiles with bwrap in the name:"
             sudo grep -i bwrap /sys/kernel/security/apparmor/profiles || echo "  none"
