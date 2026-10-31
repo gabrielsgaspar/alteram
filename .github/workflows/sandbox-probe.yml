@@ -227,7 +227,8 @@ jobs:
           {
             "filesystem": {
               "denyRead": ["./.env", "./.env.local", "./.env.production", "./**/.env"],
-              "allowWrite": [".", "~/.cache/uv"]
+              "allowWrite": [".", "~/.cache/uv"],
+              "denyWrite": []
             },
             "network": {
               "allowedDomains": ["pypi.org", "files.pythonhosted.org", "github.com", "api.github.com"],
@@ -242,10 +243,14 @@ jobs:
           results=""
           fails=0
           # expect: 0 = must succeed, 1 = must fail (an enforcement check).
+          # An enforcement check passes only if the sandboxed shell started
+          # (printed the marker) and then the denied action failed.
           check() {
             local label="$1" expect="$2" cmd="$3" out rc verdict
+            if [ "${expect}" = 1 ]; then cmd="echo SRT_STARTED; ${cmd}"; fi
             out="$(srt -c "${cmd}" 2>&1)"; rc=$?
-            if { [ "${expect}" = 0 ] && [ "${rc}" = 0 ]; } || { [ "${expect}" = 1 ] && [ "${rc}" != 0 ]; }; then
+            if { [ "${expect}" = 0 ] && [ "${rc}" = 0 ]; } ||
+               { [ "${expect}" = 1 ] && [ "${rc}" != 0 ] && grep -q '^SRT_STARTED$' <<< "${out}"; }; then
               verdict=pass
             else
               verdict=FAIL; fails=$((fails + 1))
