@@ -297,6 +297,36 @@ jobs:
           extra "srt inside scrub-style bwrap (pessimistic)" "${scrub_bwrap[@]}" \
             bash -c "cd '${PWD}' && npx --no-install '@anthropic-ai/sandbox-runtime@${SRT_VERSION}' --settings '${settings}' -c true"
 
+          # Claude Code merges Read deny rules into the sandbox's denyRead
+          # (docs: sandboxing, "Paths ... from both sandbox settings and
+          # permission rules are merged"). agent-build denies these with
+          # --disallowedTools. "temp" is only the two that touch uv.
+          deny_rules() {
+            python3 - "${settings}" "$1" "$2" <<'PY'
+          import json, sys
+          src, dst, which = sys.argv[1:]
+          s = json.load(open(src))
+          temp = ["/home/runner/work/_temp", "/home/runner/.*"]
+          full = temp + ["./.git/config", "/proc", "/etc", "/root", "/tmp",
+                         "/home/runner/work/_actions", "/home/runner/work/_tool", "/home/runner/runners"]
+          s["filesystem"]["denyRead"] += temp if which == "temp" else full
+          json.dump(s, open(dst, "w"))
+          PY
+          }
+          deny_rules "${RUNNER_TEMP}/srt-temp.json" temp
+          deny_rules "${RUNNER_TEMP}/srt-full.json" full
+          base_settings="${settings}"
+          uvpy="uv run --locked python -c 'import alteram, sys; print(sys.executable)'"
+          settings="${RUNNER_TEMP}/srt-temp.json"; check "agent-build denies (uv dirs): uv run (extra)" 0 "${uvpy}"
+          settings="${RUNNER_TEMP}/srt-full.json"; check "agent-build denies (all): true (extra)" 0 "true"
+          settings="${RUNNER_TEMP}/srt-full.json"; check "agent-build denies (all): uv run (extra)" 0 "${uvpy}"
+          # Same, with Python installed outside every denied path.
+          sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/uv-python
+          UV_PYTHON_INSTALL_DIR=/opt/uv-python uv sync --locked > /dev/null 2>&1 || echo "re-sync with /opt/uv-python failed"
+          settings="${RUNNER_TEMP}/srt-temp.json"; check "denies (uv dirs), Python in /opt: uv run (extra)" 0 "${uvpy}"
+          settings="${RUNNER_TEMP}/srt-full.json"; check "denies (all), Python in /opt: uv run (extra)" 0 "${uvpy}"
+          settings="${base_settings}"
+
           if [ "${fails}" != 0 ]; then
             echo "::group::srt --debug true"
             srt --debug -c true 2>&1 | tail -n 40
