@@ -49,6 +49,64 @@ jobs:
             esac
           done
 
+      # 1b. Sandbox dependencies. The repo's .claude/settings.json turns the Bash
+      #     sandbox on with failIfUnavailable, so Claude Code refuses to start
+      #     (0 turns, no session init) when bubblewrap or socat is missing or
+      #     bubblewrap cannot create a user namespace. The runner image does not
+      #     list either package. Runs after the guard so only authorised users
+      #     reach the `sudo` calls. Keeps the sandbox on; settings.json is
+      #     untouched.
+      #     https://code.claude.com/docs/en/sandboxing
+      #     Order of fixes, re-checking bwrap after each:
+      #       a. the documented AppArmor profile that lets /usr/bin/bwrap create
+      #          user namespaces (only if Ubuntu restricts them);
+      #       b. if bwrap still fails, turn the restriction off for the whole
+      #          runner with sysctl. That is broader than (a), which is why it
+      #          is the last resort. It is acceptable here only because the
+      #          runner is ephemeral and discarded after the job.
+      #     If bwrap still fails, the step fails with the bwrap error, instead
+      #     of a silent 0-turn failure in the Plan step.
+      - name: Install sandbox dependencies (bubblewrap, socat)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap socat
+
+          bwrap_err="${RUNNER_TEMP}/bwrap.err"
+          bwrap_ok() {
+            bwrap --ro-bind / / --proc /proc --dev /dev --unshare-user --unshare-pid true 2> "${bwrap_err}"
+          }
+
+          restrict="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
+          echo "kernel.apparmor_restrict_unprivileged_userns: ${restrict}"
+
+          if ! bwrap_ok; then
+            if [ "${restrict}" = "1" ]; then
+              echo "bwrap failed; adding the AppArmor profile for /usr/bin/bwrap."
+              sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          profile bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+            include if exists <local/bwrap>
+          }
+          EOF
+              sudo systemctl reload apparmor
+            fi
+          fi
+
+          if ! bwrap_ok; then
+            echo "bwrap still fails; turning the user namespace restriction off (ephemeral runner)."
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+          if ! bwrap_ok; then
+            echo "::error::bubblewrap cannot start on this runner, so the Claude Code sandbox cannot start. bwrap said: $(< "${bwrap_err}")"
+            exit 1
+          fi
+          echo "bubblewrap works."
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
