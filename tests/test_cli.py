@@ -11,6 +11,7 @@ from test_graph import JUDGE_MODEL, LAWYER_MODEL, VERDICT, factory, fakes, reply
 from alteram import cli
 from alteram.events import events_path, format_event, load_events
 from alteram.graph import JUDGE_MODEL_ENV, LAWYER_MODEL_ENV
+from alteram.loader import load_case
 from alteram.models import (
     AgentCall,
     FailedRun,
@@ -319,3 +320,66 @@ def test_run_without_follow_prints_no_events(
 ) -> None:
     cli.main(["run", str(CASE_001)], factory(fakes()), tmp_path)
     assert "agent_call_started" not in capsys.readouterr().out
+
+
+CASES_DIR = CASE_001.parent
+
+
+def no_model(*args: object) -> None:
+    raise AssertionError("`cases` must not build a model")
+
+
+def write_case(path: Path, case_id: str, expected: str) -> None:
+    path.write_text(
+        f"---\nid: {case_id}\ntitle: Title of {case_id}\nkind: balanced\n"
+        f"expected: {expected}\n---\n\n[1] A fact.\n",
+        encoding="utf-8",
+    )
+
+
+def test_cases_list_matches_the_loader(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for name in ("ANTHROPIC_API_KEY", LAWYER_MODEL_ENV, JUDGE_MODEL_ENV):
+        monkeypatch.delenv(name)
+    assert cli.main(["cases", "list"], no_model, cases_dir=CASES_DIR) == 0
+    lines = capsys.readouterr().out.splitlines()
+    paths = list(CASES_DIR.glob("*.md"))
+    cases = sorted((load_case(p) for p in paths), key=lambda c: c.id)
+    assert len(lines) == len(paths)
+    assert lines == [cli.format_case_line(c) for c in cases]
+    for line, case in zip(lines, cases, strict=True):
+        case_id, kind, title = re.fullmatch(r"(\S+) +(\S+) +(.+)", line).groups()
+        assert (case_id, kind, title) == (case.id, case.kind, case.title)
+        assert "expected" not in line.split(title)[0]
+        assert case.expected not in (case_id, kind)
+
+
+def test_cases_list_never_prints_expected_and_sorts_by_id(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_case(tmp_path / "a.md", "case-b", "undecidable")
+    write_case(tmp_path / "b.md", "case-a", "claimant")
+    assert cli.main(["cases", "list"], no_model, cases_dir=tmp_path) == 0
+    out = capsys.readouterr().out
+    assert [line.split()[0] for line in out.splitlines()] == ["case-a", "case-b"]
+    for value in ("expected", "undecidable", "claimant", "respondent"):
+        assert value not in out
+
+
+def test_cases_list_without_cases_exits_two(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["cases", "list"], no_model, cases_dir=tmp_path) == 2
+    assert "No cases found" in capsys.readouterr().err
+
+
+def test_top_level_help_lists_cases_but_run_help_does_not(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "cases" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        cli.main(["run", "--help"])
+    assert "cases" not in capsys.readouterr().out
