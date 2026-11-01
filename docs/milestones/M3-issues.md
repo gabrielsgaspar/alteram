@@ -76,7 +76,7 @@ Turn one legislation.gov.uk XML document (CLML, `/data.xml`) into a list of `Pro
   - One `Provision` per subsection (`P2`); a section (`P1`) with no subsections is one provision. `P3` and deeper stay inside their subsection's text, each on its own line, with its number, e.g. `(a) ...`.
   - `heading_path`: Act title, then Part, Chapter and cross-heading titles where present, then `s.<n> <section title>`.
   - Text: `Pnumber`s and `Text` with every `CommentaryRef` removed, `Addition`/`Substitution` wrappers unwrapped (their text kept), and `Commentaries`, `Footnotes` and editorial notes dropped. Whitespace normalised; no XML left.
-  - Validity per provision from the nearest `RestrictStartDate`/`RestrictEndDate` on the provision or its ancestors, falling back to the document's. The tests must pin down, from the two adjacent CCA s.75 fixtures, whether `RestrictEndDate` is inclusive, and convert to the exclusive `in_force_to` of M3.md 6.2.
+  - Validity per provision from the nearest `RestrictStartDate`/`RestrictEndDate` on the provision or its ancestors, falling back to the document's. The tests must pin down, from the adjacent dated CCA s.88 fixtures, whether `RestrictEndDate` is inclusive, and convert to the exclusive `in_force_to` of M3.md 6.2.
   - `status`: `prospective` or `repealed` from `Status`; provisions with `Match="false"` are returned with `status="prospective"` if prospective, otherwise left out and counted in `ParsedDocument.skipped`.
   - `unapplied_effects`: the `ukm:UnappliedEffect` entries whose `AffectedProvisions` cover this provision (not the whole Act's list), as short strings.
 - `tests/test_legislation.py`: new, using the files listed in `tests/fixtures/law/legislation/SOURCES.md`.
@@ -91,9 +91,9 @@ Turn one legislation.gov.uk XML document (CLML, `/data.xml`) into a list of `Pro
 
 1. For CRA s.9 at 2015-10-01, the parser returns one provision per subsection; s.9(1)'s text is exactly "Every contract to supply goods is to be treated as including a term that the quality of the goods is satisfactory." and its heading path starts with "Consumer Rights Act 2015" and ends with the s.9 title.
 2. No provision text from any fixture contains `<`, `>`, an F-note marker such as `F1`, or text from a `Commentary` element (a test checks each fixture).
-3. `version_dates` for the current CCA s.75 fixture matches the dated `hasVersion` links in it, in ascending order.
-4. For the two adjacent CCA s.75 fixtures, the earlier version's `in_force_to` equals the later version's `in_force_from`, and a test documents whether `RestrictEndDate` was inclusive.
-5. The CRA s.12 fixture yields at least one provision with a non-empty `unapplied_effects`, and the CCA s.75 fixture's provisions do not list effects aimed only at other sections.
+3. `version_dates` for the current CCA s.88 fixture matches the dated `hasVersion` links in it, in ascending order.
+4. For each pair of adjacent dated CCA s.88 fixtures, the earlier version's `in_force_to` equals the later version's `in_force_from`, and a test documents whether `RestrictEndDate` was inclusive. s.88(4A) is absent (or not in force) in the 2006-10-01 version and present in the 2008-10-01 version.
+5. The CRA s.12 fixture yields at least one provision with a non-empty `unapplied_effects`, and the CCA s.88 fixture's provisions do not list effects aimed only at other sections.
 6. The CCA s.140A fixture requested at 1990-01-01 reports `valid_from` 1991-02-01 and counts its `Match="false"` parts in `skipped` (or marks them prospective), as the test documents.
 7. `git diff --stat main` lists only the two files in scope.
 8. `uv run ruff check .`, `uv run ruff format --check .` and `uv run pytest` pass, with more tests collected than on `main`.
@@ -351,7 +351,7 @@ Describe the law library's sources in one config file and write the fetcher that
 
 ## In scope
 
-- `law/sources.toml`: new, with `cra-2015` and `cca-1974` exactly as in M3.md 6.6, plus `limitation-1980` (`ukpga/1980/58`, sections `2`, `5`, `14A`, `32`, same metadata) unless `docs/SETUP_LOG.md` records decision D5 as "no".
+- `law/sources.toml`: new, with `cra-2015`, `cca-1974` and `limitation-1980` exactly as in M3.md 6.6 (the `cca-1974` list has no s.75 or s.75A, on purpose: D4), each with the full `doc_type`, `authority_tier`, `licence` and `attribution` shown for `cra-2015`.
 - `src/alteram/law/fetch.py`: new.
   - `load_sources(path) -> dict[str, Source]` with `tomllib`; `Source` is a Pydantic model; unknown keys, a missing required key, or a `kind` other than `legislation`/`fca` are errors naming the source.
   - `section_url(base, section, version=None) -> str` (`.../section/<s>/data.xml` or `.../section/<s>/<YYYY-MM-DD>/data.xml`).
@@ -404,7 +404,7 @@ Join parser, version merging and chunker into the build step of ingestion: raw f
 
 ## Done when
 
-1. Building from the CCA s.75 fixtures yields chunks whose spans match the fixture versions, and every chunk validates as a `LawChunk`.
+1. Building from the CCA s.88 fixtures yields chunks whose spans match the fixture versions: a subsection whose text is the same in all three dated fixtures (e.g. s.88(1)) keeps one span, one whose text changes starts a new span on that date (s.88(2) on 2006-10-01), and s.88(4A) starts on 2008-10-01. Check each against the fixture text, not this list. Every chunk validates as a `LawChunk`.
 2. Running the build twice gives byte-identical JSONL.
 3. A tampered raw file stops the build with its name in the error.
 4. `read_chunks` round-trips what was written.
@@ -556,7 +556,7 @@ Add FCA Handbook rules (CONC and DISP) to the law library from files saved by ha
   - `in_force_from`: [18] where the in-force or "as at" date appears in the saved file. `in_force_to` None.
   - `authority_tier` on each `Provision`: `regulation` for R and E, `guidance` for G (the chunker already prefers a provision's tier over the source's).
 - `src/alteram/law/build.py`: for sources with `kind = "fca"`, read files from `law/raw/<source>/` listed in a hand-written `manifest.txt` (file name and sha256 per line) and use `parse_fca_file`; legislation sources unchanged.
-- `law/sources.toml`: add `fca-conc` and `fca-disp` ([18] chapters chosen under D3), `doc_type = "regulation"`, licence and attribution as decided in step 18.
+- `law/sources.toml`: add `fca-conc` (CONC 1, 5, 6, 7) and `fca-disp` (DISP 1, 2, 3), as decided under D3 ([18] how chapters are named in the saved files), `doc_type = "regulation"`, licence and attribution as decided in step 18.
 - `tests/test_fca.py`: new, on `tests/fixtures/law/fca/`. `tests/test_law_build.py`: add an FCA build test.
 
 ## Out of scope

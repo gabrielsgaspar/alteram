@@ -1,6 +1,6 @@
 # Task: M3-01 foundations for the law library
 
-Mode: **local**, a supervised Claude Code session in `~/projects/alteram`. It is not for `build_review.py` or `ship.py`, because it changes `pyproject.toml`, `uv.lock` and `AGENTS.md`, and needs files from legislation.gov.uk. Plan: `docs/milestones/M3.md`, step 01. Needs: Gabriel's answers to D1–D9 and approval of the dependencies (section 10).
+Mode: **local**, a supervised Claude Code session in `~/projects/alteram`. It is not for `build_review.py` or `ship.py`, because it changes `pyproject.toml`, `uv.lock` and `AGENTS.md`, and needs files from legislation.gov.uk. Plan: `docs/milestones/M3.md`, step 01. Needs: nothing more. Gabriel answered D1–D9 and approved the three dependencies on 1 November 2026 (section 10).
 
 ## Goal
 
@@ -16,11 +16,11 @@ Make every later M3 step possible without touching protected files. Add the appr
   - `ukpga-2015-15-section-9@2015-10-01.xml`: plain subsections (`/ukpga/2015/15/section/9/2015-10-01/data.xml`).
   - `ukpga-2015-15-section-22@2015-10-01.xml`: a long section with many subsections.
   - `ukpga-2015-15-section-12@current.xml`: carries the unapplied Digital Markets, Competition and Consumers Act 2024 effect (`/ukpga/2015/15/section/12/data.xml`).
-  - `ukpga-1974-39-section-75@current.xml`: has the `hasVersion` list.
-  - `ukpga-1974-39-section-75@<A>.xml` and `@<B>.xml`: two **adjacent** dated versions from that list whose text differs. Pick A and B by reading the list and comparing; record why in `SOURCES.md`.
+  - `ukpga-1974-39-section-88@current.xml`: has the `hasVersion` list (on 1 Nov 2026: 1991-02-01, 2006-06-16, 2006-10-01, 2008-10-01).
+  - `ukpga-1974-39-section-88@2006-06-16.xml`, `@2006-10-01.xml`, `@2008-10-01.xml`: three **adjacent** dated versions. Words in s.88(2) and (3) were substituted on 1 Oct 2006 and s.88(4A) was inserted on 1 Oct 2008, so both "changed text" and "new subsection" are covered. Record this in `SOURCES.md`. (CCA s.75 is no longer in the library, D4.)
   - `ukpga-1974-39-section-140A@1990-01-01.xml`: the base-date case, with `Match="false"` parts.
   - Total under 1 MB. If any file is larger than 300 KB, say so before committing.
-- `docs/SETUP_LOG.md`: under Decisions, one dated line per decision D1–D9 as Gabriel answered them, and a line recording the old local branch `plan/M3-2026-10-30` as superseded by `docs/milestones/M3.md`.
+- `docs/SETUP_LOG.md`: under Decisions, one dated line (1 November 2026) per decision D1–D9 as in `docs/milestones/M3.md` section 10, including the reason for leaving out CCA ss.75 and 75A (D4) and the D2 fallback, and a line recording the old local branch `plan/M3-2026-10-30` as superseded by `docs/milestones/M3.md`. Also a line saying `www.legislation.gov.uk` stays out of `.claude/settings.json` because the GitHub agent workflows load project settings too.
 - `tasks/M3-01-foundations.md`: this file.
 
 ## Out of scope
@@ -31,7 +31,7 @@ Make every later M3 step possible without touching protected files. Add the appr
 
 ## Gabriel runs
 
-The sandbox cannot reach legislation.gov.uk. In your own terminal:
+The sandbox cannot reach legislation.gov.uk, and `www.legislation.gov.uk` is deliberately not in `.claude/settings.json` (the GitHub agent workflows load project settings too). Run all of these in your own terminal before the session, then start the session:
 
 ```bash
 cd ~/projects/alteram
@@ -41,11 +41,15 @@ ua="alteram-fixtures (+https://github.com/gabrielsgaspar/alteram)"
 curl -fsSL -A "$ua" $u/ukpga/2015/15/section/9/2015-10-01/data.xml  -o $d/ukpga-2015-15-section-9@2015-10-01.xml
 curl -fsSL -A "$ua" $u/ukpga/2015/15/section/22/2015-10-01/data.xml -o $d/ukpga-2015-15-section-22@2015-10-01.xml
 curl -fsSL -A "$ua" $u/ukpga/2015/15/section/12/data.xml            -o $d/ukpga-2015-15-section-12@current.xml
-curl -fsSL -A "$ua" $u/ukpga/1974/39/section/75/data.xml            -o $d/ukpga-1974-39-section-75@current.xml
+curl -fsSL -A "$ua" $u/ukpga/1974/39/section/88/data.xml            -o $d/ukpga-1974-39-section-88@current.xml
+curl -fsSL -A "$ua" $u/ukpga/1974/39/section/88/2006-06-16/data.xml -o $d/ukpga-1974-39-section-88@2006-06-16.xml
+curl -fsSL -A "$ua" $u/ukpga/1974/39/section/88/2006-10-01/data.xml -o $d/ukpga-1974-39-section-88@2006-10-01.xml
+curl -fsSL -A "$ua" $u/ukpga/1974/39/section/88/2008-10-01/data.xml -o $d/ukpga-1974-39-section-88@2008-10-01.xml
 curl -fsSL -A "$ua" $u/ukpga/1974/39/section/140A/1990-01-01/data.xml -o $d/ukpga-1974-39-section-140A@1990-01-01.xml
+date -u +%F > $d/.fetched-on && sha256sum $d/*.xml
 ```
 
-Claude then reads the s.75 `hasVersion` list, picks A and B, and gives you the two remaining `curl` lines.
+That is 8 requests, far under the fair-use limit. Paste the `sha256sum` output into the session; Claude writes `SOURCES.md` from it and checks the s.88 `hasVersion` list. If that list no longer matches the dates above, Claude gives you replacement `curl` lines for three adjacent versions.
 
 ## Acceptance criteria
 
@@ -53,6 +57,6 @@ Claude then reads the s.75 `hasVersion` list, picks A and B, and gives you the t
 2. `.env.example` and the `AGENTS.md` table each contain exactly the seven new names, and `.env.example` has no value after any `=`.
 3. `git check-ignore law/raw/x law/chunks/x law/cache/x` prints all three paths.
 4. Every fixture is well-formed XML (`python -c "import xml.etree.ElementTree as E,sys; [E.parse(f) for f in sys.argv[1:]]" tests/fixtures/law/legislation/*.xml`), and every sha256 in `SOURCES.md` matches `sha256sum`.
-5. The two s.75 versions A and B are adjacent in the `hasVersion` list, and `diff` of their `P1group` text is non-empty (shown in the report).
-6. `docs/SETUP_LOG.md` has the D1–D9 lines.
+5. The three dated s.88 versions are adjacent in the `hasVersion` list of `@current.xml`, and the text differs between each pair (the `diff` is shown in the report).
+6. `docs/SETUP_LOG.md` has the D1–D9 lines and the settings line.
 7. `uv run ruff check .`, `uv run ruff format --check .` and `uv run pytest` pass, with the same test count as `main`.

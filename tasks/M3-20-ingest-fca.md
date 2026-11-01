@@ -4,7 +4,7 @@ Mode: **local**, a supervised Claude Code session. Gabriel runs the paid command
 
 ## Goal
 
-Add the chosen FCA CONC and DISP chapters (and PRIN 2A if chosen under D3) to the law library, then record M3 as done, with measured costs and anything the next milestone should know.
+Add the FCA chapters chosen under D3 (CONC 1, 5, 6, 7 and DISP 1, 2, 3) to the law library, then record M3 as done, with measured costs and anything the next milestone should know.
 
 ## In scope
 

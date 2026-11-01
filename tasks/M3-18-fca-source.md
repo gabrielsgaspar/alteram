@@ -1,6 +1,6 @@
 # Task: M3-18 FCA Handbook: access route and fixtures
 
-Mode: **local**, a supervised Claude Code session. Plan: `docs/milestones/M3.md`, steps 18–20 and sections 3.2 and 4.3. Needs: decision D2 answered (a or b; if c, FCA is deferred and this task is not run in M3) and D3 (chapters).
+Mode: **local**, a supervised Claude Code session. Plan: `docs/milestones/M3.md`, steps 18–20 and sections 3.2 and 4.3. Needs: the FCA's written consent, asked for under D2(a). If there is no answer by step 17, FCA is deferred (D2(c)) and this task is not run in M3. Chapters: D3 (CONC 1, 5, 6, 7; DISP 1, 2, 3; no PRIN 2A).
 
 ## Goal
 
@@ -8,7 +8,7 @@ Settle how FCA Handbook text may be obtained and stored under the FCA's terms, s
 
 ## In scope
 
-- `docs/SETUP_LOG.md`: a dated decision recording the route, quoting the FCA's written answer if D2(a), or the terms relied on if D2(b), and the licence and attribution text to store with each FCA chunk.
+- `docs/SETUP_LOG.md`: a dated decision recording the route, quoting the FCA's written answer and any conditions in it, and the licence and attribution text to store with each FCA chunk.
 - `tests/fixtures/law/fca/`: 3–5 hand-saved files covering at least DISP 2.8.2R, one CONC rule (R), one guidance paragraph (G), and one page with navigation or footer text to strip. Add `SOURCES.md` with the URL, date saved, how it was saved (browser "Save as", PDF export, …), the sha256, and the attribution.
 - `docs/milestones/M3-issues.md`: complete issue 19. Replace each `[18]` marker with the file format, the patterns for rule numbers and status letters, where the in-force date appears, the strings to strip, and the chapters and attribution for `sources.toml`; then remove the note at its top.
 - `pyproject.toml`, `uv.lock`: only if the saved format needs a parser library (e.g. `pypdf` for PDFs), and only after Gabriel approves that dependency in the session.
@@ -21,7 +21,7 @@ Settle how FCA Handbook text may be obtained and stored under the FCA's terms, s
 
 ## Gabriel does
 
-- D2(a): email handbook.feedback@fca.org.uk asking for written consent to (1) download CONC, DISP and PRIN 2A by script or as PDFs and (2) store them in a private, non-public retrieval index for a non-commercial research project, with OGL attribution. Paste the answer into the session.
+- D2(a): email handbook.feedback@fca.org.uk asking for written consent to (1) download CONC 1, 5, 6, 7 and DISP 1, 2, 3 by script or as PDFs and (2) store them in a private, non-public retrieval index for a non-commercial research project, with OGL attribution. Paste the answer into the session.
 - Save the sample pages in a browser, as agreed, into `tests/fixtures/law/fca/`.
 
 ## Acceptance criteria
