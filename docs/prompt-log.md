@@ -60,3 +60,16 @@ Results:
 - `eval compare` against the M1 baseline: the case sets differ (005–009 only in the new one), so intervals use the 4 shared cases. Accuracy on those is 83% → 75%, which is only case-003 (1 of 3 undecidable → 0 of 3). The compare table prints b − a = +0.056 for accuracy, but its interval [−0.250, 0.000] does not contain that figure. The point estimate covers all 9 cases and the interval only the 4 shared ones. Read the interval, not the difference.
 
 Warning: only 9 cases, with 3 runs each. The intervals are wide and cannot support strong claims (the tool warns below 10 cases). Cases 005–009 were also written by Claude and may be easier for a Claude judge than cases written by someone else. The case-008 vs case-003 difference rests on one case each, and does not show which design property causes it.
+
+## 2026-11-01: contextual_header.md (new, v1)
+
+Reason: new prompt for M3 step 02 (`docs/milestones/M3.md`, design 6.3). Each law-library chunk gets a two- or three-sentence header that places it in its document, used only for embedding and keyword search and never cited.
+
+Change:
+- `prompts/contextual_header.md`: new, `version: 1`. Describes the document, heading path and chunk as data, not instructions. Asks for the source, the Part, Chapter and section, the subject in everyday words, and cross-references named by number. Forbids quotation, advice, conclusions, case law and statements about whether a provision is in force. Limits the header to 600 characters, in British English, returned through `ContextualHeader {header}`.
+- Gabriel's three additions at approval: name each term the chunk defines; say which part of a longer provision the chunk is when the heading path shows it, without guessing the other parts; describe the provision neutrally, without framing it as favouring any party.
+- `tests/test_prompts.py`: the version-line check now covers this prompt, and a new test checks that it states its rules. No test calls a model.
+
+Results: not run. The run-all-cases check does not apply, because this prompt is not part of the case graph (claimant, respondent, judge). No model call was made. The first real outputs are read in step 17 with `--limit 5`.
+
+Decision: kept (approved by Gabriel, 2026-11-01). Open risk: with defined terms now named, a header for a long definitions section may need more than 600 characters or three sentences. Step 11's code retries once and then fails, so step 17's check should look for this.
