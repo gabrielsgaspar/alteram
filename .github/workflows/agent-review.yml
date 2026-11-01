@@ -3,8 +3,11 @@ name: Agent review
 # Third stage of the GitHub agent flow (see docs/harness-plan.md). After CI
 # passes on a pull request that agent-build opened, Claude (Opus, read-only)
 # reviews the diff against the plan's "Done when" list, and a plain step posts
-# one comment and sets one label: agent-approved or needs-human. The comment
-# is advisory. Nothing here approves, merges, pushes or starts a fix loop.
+# one comment. After an approval it adds agent-approved. After a well-formed
+# "changes" review with a Must fix list it starts agent-build in fix mode on
+# the same PR, for at most 3 fix rounds; anything else, or a 4th "changes",
+# adds needs-human. The comment is advisory. Nothing here approves, merges or
+# pushes.
 #
 # Why workflow_run and not pull_request: workflow_run always runs this file
 # from the default branch, so no pull request can rewrite the guard below. A
@@ -17,18 +20,25 @@ name: Agent review
 # https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target
 # https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/
 #
-# Two jobs:
-#   review  Guard, wait for every `test` check, gather the data, Claude
-#           reviews, plain code applies the verdict rules. Read-only token.
-#   post    One comment and one label, with issues: write and nothing that
-#           can approve or merge. After a failed guard on a matched PR it only
-#           removes agent-approved, with no comment.
+# Four jobs:
+#   review    Guard, wait for every `test` check, gather the data, Claude
+#             reviews, plain code applies the verdict rules. Read-only token.
+#   post      One comment and the labels, with issues and pull-requests write
+#             and nothing that can approve or merge. Counts the fix rounds.
+#             After a failed guard on a matched PR it only removes
+#             agent-approved, with no comment.
+#   dispatch  Starts agent-build in fix mode with workflow_dispatch, the one
+#             event a GITHUB_TOKEN call still starts. actions: write only.
+#   dispatch_failed  If that call fails: one comment and needs-human.
 # workflow_run only fires once this file is on main.
 on:
   workflow_run:
     workflows: [CI]
     types: [completed]
     branches: ["agent/**"]
+
+# Every job sets its own permissions; nothing else gets any.
+permissions: {}
 
 # One review per branch at a time; a newer CI run waits instead of racing.
 concurrency:
@@ -64,6 +74,8 @@ jobs:
     outputs:
       guard_ok: ${{ steps.guard.outputs.guard_ok }}
       pr: ${{ steps.guard.outputs.pr }}
+      issue: ${{ steps.guard.outputs.issue }}
+      fixable: ${{ steps.result.outputs.fixable }}
       reason: ${{ steps.guard.outputs.reason || steps.ci.outputs.reason || steps.plan.outputs.reason || steps.diff.outputs.reason || steps.result.outputs.reason }}
       verdict: ${{ steps.result.outputs.verdict }}
       comment: ${{ steps.result.outputs.comment }}
@@ -519,8 +531,11 @@ jobs:
                 dependency), even when every item is verified.
             - `nice_to_have`: improvements that should not block a merge. Matters
               of taste go here, not in `must_fix`.
-            - `verdict`: `approve` only if every item is in `checked`, none is
-              `not_met` and `must_fix` is empty. Otherwise `changes`.
+            - `verdict`: `approve` only if every item is in `checked` exactly
+              once, none is `not_met`, none is
+              `not_verifiable_without_running_code` (an item that only asks
+              for a command CI runs to pass is `verified` from `ci.md`), and
+              `must_fix` is empty. Otherwise `changes`.
 
             Keep each entry to a few sentences and the whole result under 1000
             words. Return the structured result and nothing else.
@@ -528,11 +543,23 @@ jobs:
       # 9. Claude's result, checked by plain code. This step holds the two
       #    token values, so it runs no git and nothing from the checkout, and
       #    runs from RUNNER_TEMP. The final verdict is `approve` only if the
-      #    model said approve, `checked` has every Done when id, none is
-      #    not_met, and must_fix is empty after the scope problems from step 4
-      #    are added to it. Otherwise it is `changes`. The comment is built
-      #    here and checked for both token values (compared in Python, never
-      #    printed) and for token prefixes before it leaves the job.
+      #    model said approve, `checked` has every Done when id exactly once
+      #    and no other id, none is not_met, none is
+      #    not_verifiable_without_running_code unless CI covers it, and
+      #    must_fix is empty after the scope problems from step 4 are added
+      #    to it. Otherwise it is `changes`. An item counts as covered by CI
+      #    only if every backticked command in it is one ci.yml runs, joined
+      #    by `&&` or words like "and" and "pass" (run_by(), the same as in
+      #    agent-build's publish job; keep them equal); CI passed in step 2,
+      #    so such an item is shown as verified by CI.
+      #    `fixable` (post starts a fix round only then): the verdict is
+      #    `changes`, each id is in `checked` exactly once with no unknown
+      #    id, and must_fix is not empty. A malformed review, or one held
+      #    back only by items no fix can verify, goes to needs-human.
+      #    The comment body is built here (post adds the first-line marker
+      #    and the footer) and checked for both token values (compared in
+      #    Python, never printed) and for token prefixes before it leaves
+      #    the job.
       - name: Check Claude's result and build the comment
         id: result
         if: ${{ !cancelled() && steps.claude.conclusion != 'skipped' }}
@@ -554,7 +581,23 @@ jobs:
               "not_met": "Not met",
               "not_verifiable_without_running_code": "Not verifiable without running code",
           }
+          SPAN = re.compile(r"`([^`]*)`")
+          FILLER = {"and", "both", "all", "pass", "passes", "succeed", "succeeds", "cleanly"}
+          # What .github/workflows/ci.yml runs.
+          CI_COMMANDS = {"uv sync --locked", "uv run ruff check .", "uv run ruff format --check .", "uv run pytest", "uv run pytest -q"}
           work = os.path.join(os.environ["RUNNER_TEMP"], "agent-review")
+
+
+          def run_by(item, commands):
+              # True if the item only asks for commands in `commands` to pass.
+              spans = SPAN.findall(item)
+              if not spans:
+                  return False
+              for span in spans:
+                  if not all(" ".join(part.split()) in commands for part in span.split("&&")):
+                      return False
+              rest = re.sub(r"[.,;:!()]", " ", SPAN.sub(" ", item).lower())
+              return all(word in FILLER for word in rest.split())
 
 
           def fail(reason):
@@ -586,29 +629,46 @@ jobs:
           entries = result.get("checked")
           if not isinstance(entries, list):
               fail("The reviewer did not return a usable result.")
-          checked = {}
+          checked, seen = {}, []
           for entry in entries:
               if not isinstance(entry, dict) or entry.get("status") not in STATUS:
                   fail("The reviewer did not return a usable result.")
               if not all(isinstance(entry.get(k), str) for k in ("id", "how")):
                   fail("The reviewer did not return a usable result.")
+              seen.append(entry["id"].strip())
               checked.setdefault(entry["id"].strip(), entry)
 
           items = json.load(open(os.path.join(work, "data", "done-when.json"), encoding="utf-8"))
           scope = json.load(open(os.path.join(work, "scope.json"), encoding="utf-8"))
           must_fix += [f"{problem} (found by the workflow's path check)." for problem in scope]
-          missing = [item["id"] for item in items if item["id"] not in checked]
-          not_met = [item["id"] for item in items if checked.get(item["id"], {}).get("status") == "not_met"]
+          ids = [item["id"] for item in items]
+          missing = [i for i in ids if i not in checked]
+          duplicated = sorted({i for i in seen if seen.count(i) > 1})
+          unknown = sorted({i for i in seen if i not in ids})
+          not_met = [i for i in ids if checked.get(i, {}).get("status") == "not_met"]
+          by_ci, unverifiable = [], []
+          for item in items:
+              if checked.get(item["id"], {}).get("status") == "not_verifiable_without_running_code":
+                  (by_ci if run_by(item["item"], CI_COMMANDS) else unverifiable).append(item["id"])
 
-          overruled = []
-          if result["verdict"] == "approve":
-              if missing:
-                  overruled.append("not every Done when item is in `checked` (" + ", ".join(missing) + ")")
-              if not_met:
-                  overruled.append("some items are not met (" + ", ".join(not_met) + ")")
-              if must_fix:
-                  overruled.append("`must_fix` is not empty")
-          verdict = "approve" if result["verdict"] == "approve" and not overruled else "changes"
+          # Overruling reasons, whatever the model answered.
+          problems = []
+          if missing:
+              problems.append("not every Done when item is in `checked` (" + ", ".join(missing) + ")")
+          if duplicated:
+              problems.append("some ids are in `checked` more than once (" + ", ".join(duplicated) + ")")
+          if unknown:
+              problems.append("`checked` has ids that are not Done when items (" + ", ".join(unknown)[:300] + ")")
+          if not_met:
+              problems.append("some items are not met (" + ", ".join(not_met) + ")")
+          if unverifiable:
+              problems.append("some items can only be checked by running code CI does not run (" + ", ".join(unverifiable) + ")")
+          if must_fix:
+              problems.append("`must_fix` is not empty")
+          verdict = "approve" if result["verdict"] == "approve" and not problems else "changes"
+          overruled = problems if result["verdict"] == "approve" else []
+          well_formed = not (missing or duplicated or unknown)
+          fixable = verdict == "changes" and well_formed and bool(must_fix)
 
           head = os.environ["HEAD_SHA"]
           lines = [
@@ -623,20 +683,25 @@ jobs:
           for item in items:
               entry = checked.get(item["id"])
               status = STATUS[entry["status"]] if entry else "Not checked"
+              if item["id"] in by_ci:
+                  status = "Verified by CI (only asks for commands CI ran)"
               how = cell(entry["how"]) if entry else ""
               lines.append(f"| {item['id']} | {cell(item['item'])} | {status} | {how} |")
+          found = [p for p in problems if p != "`must_fix` is not empty"]
+          if found and not overruled:
+              lines += ["", "> The workflow also found that " + "; ".join(found) + ".", ""]
+          # agent-build's fix mode reads the `- ` lines between these two
+          # headings, so each item stays one line and the list is never cut.
           lines += ["", "### Must fix", ""] + ([f"- {text}" for text in must_fix] or ["None."])
-          lines += ["", "### Nice to have", ""] + ([f"- {text}" for text in nice_to_have] or ["None."])
+          lines += ["", "### Nice to have", ""]
+          tail = [f"- {text}" for text in nice_to_have] or ["None."]
           body = "\n".join(lines)
           if len(body) > 58000:
-              body = body[:58000] + "\n\n_(Cut to fit in one comment; see the run.)_"
-          label = "agent-approved" if verdict == "approve" else "needs-human"
-          body += (
-              "\n\n---\n"
-              "_Written by the `agent-review` workflow. An advisory comment, not a GitHub review or approval: "
-              f"it changed no code and merged nothing. Added `{label}`. A person reviews and merges. "
-              f"[Run]({os.environ['RUN_URL']})._\n"
-          )
+              fail("The review is too long for one comment.")
+          rest = "\n".join(tail)
+          if len(body) + len(rest) > 58000:
+              rest = rest[: 58000 - len(body)] + "\n\n_(Cut to fit in one comment; see the run.)_"
+          body += "\n" + rest
 
           for name in ("CLAUDE_CODE_OAUTH_TOKEN", "JOB_TOKEN"):
               value = os.environ.get(name, "")
@@ -648,8 +713,9 @@ jobs:
           delimiter = f"EOF_{secrets.token_hex(16)}"
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"verdict={verdict}\n")
+              out.write(f"fixable={'true' if fixable else 'false'}\n")
               out.write(f"comment<<{delimiter}\n{body}\n{delimiter}\n")
-          print(f"Verdict: {verdict} (the reviewer said {result['verdict']}).")
+          print(f"Verdict: {verdict} (the reviewer said {result['verdict']}); fixable: {fixable}.")
           EOF
 
   post:
@@ -659,8 +725,8 @@ jobs:
     if: ${{ always() && needs.review.outputs.pr != '' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 5
-    # GITHUB_TOKEN, which posts as github-actions[bot] and starts no
-    # workflows. The docs list Issues write or Pull requests write as enough
+    # GITHUB_TOKEN, which posts as github-actions[bot]; its comments and
+    # labels start no workflows (only the dispatch job starts one). The docs list Issues write or Pull requests write as enough
     # for the comment and label endpoints (POST .../issues/{n}/comments,
     # POST and DELETE .../issues/{n}/labels), but run 41246913312 got HTTP 403
     # "Resource not accessible by integration" on the comment with issues:
@@ -676,6 +742,10 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR: ${{ needs.review.outputs.pr }}
+      MAX_FIX_ROUNDS: "3"
+    outputs:
+      dispatch: ${{ steps.post.outputs.dispatch }}
+      comment_id: ${{ steps.post.outputs.comment_id }}
     steps:
       # A failed guard on a matched PR (for example a push by someone other
       # than our App) leaves no approval standing. No comment, as in the
@@ -689,17 +759,37 @@ jobs:
             echo "Removed agent-approved from #${PR}."
           fi
 
-      # One comment and one label. Skipped if the PR moved on to a newer
+      # One comment and the labels. Skipped if the PR moved on to a newer
       # commit meanwhile, since that commit's CI run starts its own review.
       # Text reaches the comment through env and a file, never the shell.
-      - name: Post the review and set the label
+      #
+      # Every comment starts with a marker line that only this step writes:
+      #   <!-- agent-review verdict=approve|changes|stopped head=<sha> run=<id> -->
+      # Model text comes later in the body, so it cannot fake a marker.
+      # agent-build's fix-mode guard reads the same markers.
+      #
+      # Fix rounds. The round is the number of distinct reviewed commits on
+      # this PR that got "changes", this one included (comments from before
+      # the marker that start "## Agent review: Changes needed" count once
+      # each); a re-run of CI on the same commit uses no extra round.
+      # - approve: add agent-approved, remove needs-human.
+      # - changes, fixable, round <= MAX_FIX_ROUNDS, no needs-human on the
+      #   PR (a person can add it to stop the loop): remove agent-approved,
+      #   add nothing, and the dispatch job starts fix round <round>.
+      # - otherwise (not fixable, rounds used up, needs-human already there,
+      #   or the review stopped): add needs-human, remove agent-approved.
+      # The functions are the same as in agent-build's guard; keep them equal.
+      - name: Post the review and set the labels
+        id: post
         if: ${{ needs.review.outputs.guard_ok == 'true' }}
         working-directory: ${{ runner.temp }}
         env:
           REVIEW_RESULT: ${{ needs.review.result }}
           VERDICT: ${{ needs.review.outputs.verdict }}
+          FIXABLE: ${{ needs.review.outputs.fixable }}
           COMMENT: ${{ needs.review.outputs.comment }}
           REASON: ${{ needs.review.outputs.reason }}
+          RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -709,8 +799,8 @@ jobs:
             exit 0
           fi
           if [ "${REVIEW_RESULT}" = success ] && [ -n "${COMMENT}" ] && { [ "${VERDICT}" = approve ] || [ "${VERDICT}" = changes ]; }; then
-            printf '%s\n' "${COMMENT}" > comment.md
-            if [ "${VERDICT}" = approve ]; then add=agent-approved; remove=needs-human; else add=needs-human; remove=agent-approved; fi
+            printf '%s\n' "${COMMENT}" > review.md
+            kind="${VERDICT}"
           else
             reason="${REASON:-The run failed before it recorded a reason.}"
             if grep -qE 'sk-ant-|lsv2_|gh[pousr]_|github_pat_|-----BEGIN' <<< "${reason}"; then
@@ -718,23 +808,167 @@ jobs:
             fi
             {
               printf '## Agent review: stopped\n\n'
-              printf '%s\n\n' "${reason:0:3000}"
-              printf -- '---\n'
-              # The backticks are literal Markdown for the comment, not a command substitution.
-              # shellcheck disable=SC2016
-              printf '_Written by the `agent-review` workflow. Not reviewed; nothing was merged. Added `needs-human`. [Run](%s)._\n' "${RUN_URL}"
-            } > comment.md
-            add=needs-human
-            remove=agent-approved
+              printf '%s\n' "${reason:0:3000}"
+            } > review.md
+            kind=stopped
           fi
+          gh api "repos/${REPO}/issues/${PR}/labels" --jq '.[].name' > labels.txt
+          gh api --paginate "repos/${REPO}/issues/${PR}/comments?per_page=100" | jq -s 'add // []' > comments.json
+
+          KIND="${kind}" python3 -I - <<'EOF'
+          import json, os, re
+
+          MARKER = re.compile(r"<!-- agent-review verdict=(approve|changes|stopped) head=([0-9a-f]{40}) run=([1-9][0-9]*) -->\r?\n")
+          LEGACY = "## Agent review: "
+          LEGACY_CHANGES = "## Agent review: Changes needed"
+          REVIEWER = "github-actions[bot]"
+
+
+          def review_marker(comment):
+              # (verdict, head) for an agent-review comment, else None. Only
+              # the start of the body counts, which only code writes.
+              if (comment.get("user") or {}).get("login") != REVIEWER:
+                  return None
+              body = comment.get("body") or ""
+              match = MARKER.match(body)
+              if match:
+                  return match.group(1), match.group(2)
+              if body.startswith(LEGACY):
+                  return ("changes" if body.startswith(LEGACY_CHANGES) else "other"), None
+              return None
+
+
+          def changes_rounds(comments, head=None):
+              # Distinct reviewed commits that got "changes", plus `head` if
+              # given. Older comments without a marker count once each.
+              heads, legacy = set(), 0
+              for comment in comments:
+                  marker = review_marker(comment)
+                  if marker and marker[0] == "changes":
+                      if marker[1]:
+                          heads.add(marker[1])
+                      else:
+                          legacy += 1
+              if head:
+                  heads.add(head)
+              return len(heads) + legacy
+
+
+          kind, head, limit = os.environ["KIND"], os.environ["HEAD_SHA"], int(os.environ["MAX_FIX_ROUNDS"])
+          labels = open("labels.txt", encoding="utf-8").read().splitlines()
+          comments = json.load(open("comments.json", encoding="utf-8"))
+          dispatch, add, remove = False, "needs-human", "agent-approved"
+          if kind == "approve":
+              add, remove = "agent-approved", "needs-human"
+              note = "Added `agent-approved`."
+          elif kind == "changes":
+              rounds = changes_rounds(comments, head)
+              if os.environ.get("FIXABLE") != "true":
+                  note = "Added `needs-human`: this review gives the builder nothing it can fix (see above), so no fix round runs."
+              elif "needs-human" in labels:
+                  note = "The PR already has `needs-human`, so no fix round runs."
+              elif rounds > limit:
+                  note = f"Added `needs-human`: all {limit} fix rounds are used."
+              else:
+                  dispatch, add = True, ""
+                  note = f"Started fix round {rounds} of {limit}: `agent-build` fixes the Must fix list on this PR."
+          else:
+              note = "Not reviewed. Added `needs-human`."
+          review = open("review.md", encoding="utf-8").read().rstrip("\n")
+          body = (
+              f"<!-- agent-review verdict={kind} head={head} run={os.environ['RUN_ID']} -->\n"
+              f"{review}\n\n---\n"
+              "_Written by the `agent-review` workflow. An advisory comment, not a GitHub review or approval: "
+              f"it changed no code and merged nothing. {note} A person reviews and merges. "
+              f"[Run]({os.environ['RUN_URL']})._\n"
+          )
+          open("comment.md", "w", encoding="utf-8").write(body)
+          with open("plan.env", "w", encoding="utf-8") as out:
+              out.write(f"dispatch={'true' if dispatch else 'false'}\nadd={add}\nremove={remove}\n")
+          print(note)
+          EOF
+
+          dispatch="$(sed -n 's/^dispatch=//p' plan.env)"
+          add="$(sed -n 's/^add=//p' plan.env)"
+          remove="$(sed -n 's/^remove=//p' plan.env)"
           if grep -qE 'sk-ant-|lsv2_|gh[pousr]_|github_pat_|-----BEGIN' comment.md; then
             echo "::error::The comment contains something that looks like a token. Not posting it."
             exit 1
           fi
-          jq -n --rawfile body comment.md '{body: $body}' \
-            | gh api --method POST "repos/${REPO}/issues/${PR}/comments" --input - > /dev/null
-          gh api --method POST "repos/${REPO}/issues/${PR}/labels" -f "labels[]=${add}" > /dev/null
-          if gh api "repos/${REPO}/issues/${PR}/labels" --jq '.[].name' | grep -qx "${remove}"; then
+          comment_id="$(jq -n --rawfile body comment.md '{body: $body}' \
+            | gh api --method POST "repos/${REPO}/issues/${PR}/comments" --input - --jq .id)"
+          if [ -n "${add}" ]; then
+            gh api --method POST "repos/${REPO}/issues/${PR}/labels" -f "labels[]=${add}" > /dev/null
+          fi
+          if grep -qx "${remove}" labels.txt; then
             gh api --method DELETE "repos/${REPO}/issues/${PR}/labels/${remove}" > /dev/null
           fi
-          echo "Posted the review on #${PR} and added ${add}."
+          {
+            echo "dispatch=${dispatch}"
+            echo "comment_id=${comment_id}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Posted the review on #${PR}${add:+ and added ${add}}."
+
+  # Starts agent-build in fix mode. GITHUB_TOKEN events start no workflows,
+  # except workflow_dispatch and repository_dispatch
+  # (https://docs.github.com/en/actions/concepts/security/github_token).
+  # repository_dispatch needs Contents write, which can merge; workflow_dispatch
+  # needs Actions write (https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps),
+  # which can re-run, cancel or delete runs and caches but cannot push or
+  # merge. This job holds only that, checks nothing out and makes one call.
+  # A dispatch runs the workflow file at `ref`, so ref is always the default
+  # branch. The inputs are pointers; agent-build's guard checks each one.
+  dispatch:
+    needs: [review, post]
+    if: ${{ needs.post.outputs.dispatch == 'true' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: write # POST .../actions/workflows/agent-build.yml/dispatches
+    steps:
+      - name: Start agent-build in fix mode
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ISSUE: ${{ needs.review.outputs.issue }}
+          PR: ${{ needs.review.outputs.pr }}
+          COMMENT_ID: ${{ needs.post.outputs.comment_id }}
+        run: |
+          set -euo pipefail
+          [[ "${ISSUE}" =~ ^[1-9][0-9]{0,8}$ && "${PR}" =~ ^[1-9][0-9]{0,8}$ && "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ && "${COMMENT_ID}" =~ ^[1-9][0-9]{0,19}$ ]] \
+            || { echo "::error::A dispatch input has the wrong form."; exit 1; }
+          gh api --method POST "repos/${REPO}/actions/workflows/agent-build.yml/dispatches" \
+            -f "ref=${DEFAULT_BRANCH}" \
+            -f "inputs[issue]=${ISSUE}" -f "inputs[pr]=${PR}" \
+            -f "inputs[head_sha]=${HEAD_SHA}" -f "inputs[review_comment_id]=${COMMENT_ID}" > /dev/null
+          echo "Started agent-build in fix mode for #${PR} at ${HEAD_SHA:0:12}."
+
+  # If the dispatch failed, the loop would stop with no label, so say so.
+  # The heading does not start with "## Agent review: ", so it is not counted
+  # as a review. To retry: remove needs-human, then run agent-build from the
+  # Actions tab with the same inputs (see docs/harness-plan.md).
+  dispatch_failed:
+    needs: [review, post, dispatch]
+    if: ${{ always() && needs.post.outputs.dispatch == 'true' && needs.dispatch.result != 'success' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      issues: write # one comment and needs-human
+      pull-requests: write # the same calls on a PR 403 with issues: write alone
+    steps:
+      - name: Comment and add needs-human
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ needs.review.outputs.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            printf '## Agent fix loop: not started\n\n'
+            # The backticks are literal Markdown for the comment, not a command substitution.
+            # shellcheck disable=SC2016
+            printf 'The review asked for changes, but starting `agent-build` in fix mode failed. Added `needs-human`. [Run](%s).\n' "${RUN_URL}"
+          } > "${RUNNER_TEMP}/comment.md"
+          jq -n --rawfile body "${RUNNER_TEMP}/comment.md" '{body: $body}' \
+            | gh api --method POST "repos/${REPO}/issues/${PR}/comments" --input - > /dev/null
+          gh api --method POST "repos/${REPO}/issues/${PR}/labels" -f "labels[]=needs-human" > /dev/null
