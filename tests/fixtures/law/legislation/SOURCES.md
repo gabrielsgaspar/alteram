@@ -18,3 +18,7 @@ Files are CLML (`data.xml`) responses saved unmodified. Fetched by Gabriel on 20
 ## The three dated versions of CCA 1974 s.88
 
 The `hasVersion` list in `ukpga-1974-39-section-88@current.xml` runs enacted, 1991-02-01, 2006-06-16, 2006-10-01, 2008-10-01, so the three dated files are adjacent versions. Between 2006-06-16 and 2006-10-01, words in s.88(2) and (3) were substituted ("seven days" became "14 days", effective 1 October 2006), which covers "changed text". Between 2006-10-01 and 2008-10-01, s.88(4A) (the default information sheet) was inserted, effective 1 October 2008, which covers "new subsection". CCA s.75 is no longer in the library (decision D4).
+
+## GitHub secret scanning false positives
+
+The `UnappliedEffect` elements in the metadata carry legislation.gov.uk effect IDs of the form `http://www.legislation.gov.uk/id/effect/key-<32 hex digits>`. They are public identifiers, not credentials, but they match the pattern of a Mailgun API key, so GitHub push protection blocks the first push of these files until each match is marked as a false positive in the repository's secret scanning settings. Do not edit the files to avoid this: that would break the sha256 values above. If you re-fetch a file, expect the same prompt for any effect ID GitHub has not seen before.
