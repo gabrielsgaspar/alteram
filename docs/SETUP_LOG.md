@@ -48,6 +48,19 @@ One checkbox per step in `ALTERAM_SETUP_BRIEF.md` section 8. Tick a step only wh
 - 2026-10-27: workspace moved to WSL2 at ~/projects/alteram; Windows copy retired.
 - 2026-10-27: Bash sandbox enabled (WSL2, strict mode, `failIfUnavailable`) with OS-level `denyRead` on `.env` paths and `**/.env`; network limited to PyPI and GitHub, write added for `~/.cache/uv`. Verified with a canary file that cat/head/grep/python/uv-run reads fail, and uv sync/lock, ruff, pytest (107 passed), git and gh work sandboxed.
 - 2026-10-30: v0 closed (setup steps 1–12 done). Next: v1 per docs/ALTERAM_V1_DESIGN.md, milestones M3, M4, M5, then M2, design defaults accepted 2026-10-29.
+- **2026-11-01, M3 decisions D1–D9** (Gabriel; full table in `docs/milestones/M3.md` section 10):
+- 2026-11-01, D1: a CLI inspector (`alteram law show/search/status`) in M3 (step 16); the console view stays in M2.
+- 2026-11-01, D2: FCA route (a). Gabriel emails the FCA (handbook.feedback@fca.org.uk) for written consent to automated download and storage in a retrieval system, and the statute track runs meanwhile. Fallback: if there is no answer by step 17, FCA is deferred from M3 (option c).
+- 2026-11-01, D3: FCA chapters CONC 1, 5, 6, 7 and DISP 1, 2, 3. No PRIN 2A.
+- 2026-11-01, D4: CCA 1974 sections 56, 87–90, 99, 100, 140A–140C and 173. Sections 75 and 75A are left out: under hire purchase and conditional sale the finance company is the supplier, so s.75 doesn't apply. They are a candidate negative case for M4's citation checker.
+- 2026-11-01, D5: the Limitation Act 1980 (ss.2, 5, 14A, 32) is a third M3 source, `limitation-1980`.
+- 2026-11-01, D6: law data models live in `law/models.py`; only `ContextualHeader` goes in `src/alteram/models.py`, as `AGENTS.md` requires.
+- 2026-11-01, D7: paid `law` commands take a `--budget` flag (default $5), separate from `ALTERAM_RUN_BUDGET_USD`.
+- 2026-11-01, D8: PostgreSQL 18 instead of the design's 16; built-in full-text search in M3; BM25 (pg_textsearch, custom image) is decided in M4 on recall@k.
+- 2026-11-01, D9: a Postgres service in CI; step 10 edits `.github/workflows/ci.yml`.
+- 2026-11-01: the old local branch `plan/M3-2026-10-30` is superseded by `docs/milestones/M3.md`.
+- 2026-11-01: `www.legislation.gov.uk` stays out of `.claude/settings.json`, because the GitHub agent workflows load project settings too. Gabriel runs the fixture `curl` commands and every later network, Docker and paid command in his own terminal.
+- 2026-11-01: M3 step 01 adds `alembic`, `psycopg[binary]` and `httpx` (approved by Gabriel), the seven new environment variables, the `law/` ignore rules, and the legislation.gov.uk fixtures.
 
 ## Step 9 review notes
 
