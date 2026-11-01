@@ -222,6 +222,11 @@ __marimo__/
 # Alteram
 runs/
 
+# Law library working directories (M3)
+law/raw/
+law/chunks/
+law/cache/
+
 # Eval runs (baselines in eval/baselines/ are committed)
 eval/runs/
 # Build → review harness logs

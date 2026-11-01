@@ -63,6 +63,13 @@ docs/            setup log, ideas, prompt change log
 | `ALTERAM_JUDGE_MODEL` | Model ID for the judge |
 | `ALTERAM_RUN_BUDGET_USD` | Spending limit per run, swap or rejudge in USD (empty: 5) |
 | `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` | Optional tracing |
+| `ALTERAM_DATABASE_URL` | Postgres for the app and Alembic |
+| `ALTERAM_TEST_DATABASE_URL` | Postgres for `db` tests only; database name must end in `_test`. Set in the shell or CI, never read from `.env` |
+| `ALTERAM_REQUIRE_DB` | When `1`, `db` tests fail instead of skipping if no test database is reachable. Set in CI |
+| `VOYAGE_API_KEY` | Voyage embeddings |
+| `ALTERAM_EMBEDDING_MODEL` | Embedding model ID |
+| `ALTERAM_HEADER_MODEL` | Model ID for contextual headers |
+| `ALTERAM_HTTP_CONTACT` | Contact (URL or email) put in the fetcher's User-Agent, per legislation.gov.uk's fair-use policy |
 
 ### Agents and prompts
 
