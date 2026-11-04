@@ -37,19 +37,37 @@ class SourceMeta(BaseModel):
 def merge_versions(provisions: Iterable[Provision]) -> list[Provision]:
     """Join identical consecutive texts into spans; see the module docstring.
 
-    Version dates are the distinct `in_force_from` values in the input. A
-    provision absent from a later version ends at that version's date.
+    A span of identical text ends where its last version ends (open if that
+    version is open-ended). Version dates are the distinct `in_force_from`
+    values of each section (same Act and section number); a provision absent
+    from a later version of its own section ends at that version's date.
     """
     items = [p for p in provisions if p.status != "prospective"]
-    version_dates = sorted({p.in_force_from for p in items})
+    section_dates: dict[str, set[date]] = defaultdict(set)
     groups: dict[str, list[Provision]] = defaultdict(list)
     for p in items:
+        section_dates[_section_path(p.uri_path)].add(p.in_force_from)
         groups[p.uri_path].append(p)
     spans: list[Provision] = []
     for uri_path in sorted(groups):
-        group = sorted(groups[uri_path], key=lambda p: (p.in_force_from, p.text))
-        spans.extend(_merge_group(uri_path, group, version_dates))
+        group = sorted(groups[uri_path], key=_version_order)
+        dates = sorted(section_dates[_section_path(uri_path)])
+        spans.extend(_merge_group(uri_path, group, dates))
     return sorted(spans, key=lambda p: (p.uri_path, p.in_force_from))
+
+
+def _version_order(p: Provision) -> tuple[date, str, bool, date]:
+    """Sort by start and text; on ties, an open-ended version comes last."""
+    return (p.in_force_from, p.text, p.in_force_to is None, p.in_force_to or date.min)
+
+
+def _section_path(uri_path: str) -> str:
+    """The path up to `section/<n>`, or the whole path if it has no section."""
+    segments = uri_path.split("/")
+    if "section" in segments:
+        i = segments.index("section")
+        return "/".join(segments[: i + 2])
+    return uri_path
 
 
 def _merge_group(
@@ -61,23 +79,35 @@ def _merge_group(
     for p in group:
         if last_seen == p.in_force_from and current and p.text != current.text:
             raise ValueError(f"{uri_path}: different texts from {p.in_force_from}")
+        gap = _first_between(version_dates, last_seen, p.in_force_from)
+        if current is not None and gap is not None:
+            spans.append(_close(current, gap))
+            current = None
         last_seen = p.in_force_from
         if p.status == "repealed":
             if current is not None:
                 spans.append(_close(current, p.in_force_from))
                 current = None
         elif current is not None and p.text == current.text:
-            if p.in_force_to is not None:
-                current = current.model_copy(update={"in_force_to": p.in_force_to})
+            current = current.model_copy(update={"in_force_to": p.in_force_to})
         else:
             if current is not None:
                 spans.append(_close(current, p.in_force_from))
             current = p
-    if current is not None and last_seen is not None:
-        later = [d for d in version_dates if d > last_seen]
-        spans.append(_close(current, later[0] if later else None))
+    if current is not None:
+        spans.append(_close(current, _first_between(version_dates, last_seen, None)))
     _check_overlaps(uri_path, spans)
     return spans
+
+
+def _first_between(
+    dates: list[date], after: date | None, before: date | None
+) -> date | None:
+    """The first date strictly between `after` and `before` (None: unbounded)."""
+    for d in dates:
+        if (after is None or d > after) and (before is None or d < before):
+            return d
+    return None
 
 
 def _close(span: Provision, end: date | None) -> Provision:
