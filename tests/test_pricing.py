@@ -4,12 +4,14 @@ import pytest
 
 from alteram.pricing import (
     DEFAULT_RUN_BUDGET_USD,
+    EMBEDDING_PRICES_CHECKED,
     PRICES_CHECKED,
     RUN_BUDGET_ENV,
     Budget,
     BudgetExceeded,
     UnknownModel,
     cost_usd,
+    embedding_cost_usd,
     priced_model,
     run_budget_from_env,
     worst_case_usd,
@@ -40,7 +42,22 @@ def test_priced_model_falls_back_to_configured_only_when_unpriced() -> None:
 
 
 def test_price_table_is_dated() -> None:
-    assert PRICES_CHECKED == "2026-10-27"
+    assert PRICES_CHECKED == "2026-11-01"
+    assert EMBEDDING_PRICES_CHECKED == "2026-11-01"
+
+
+def test_haiku_cost() -> None:
+    assert cost_usd("claude-haiku-5-5", 1_000_000, 1_000_000) == pytest.approx(0.60)
+
+
+def test_embedding_cost() -> None:
+    assert embedding_cost_usd("voyage-4-large", 1_000_000) == pytest.approx(0.12)
+    assert embedding_cost_usd("voyage-4-large", 500_000) == pytest.approx(0.06)
+
+
+def test_unknown_embedding_model_raises() -> None:
+    with pytest.raises(UnknownModel, match="voyage-typo"):
+        embedding_cost_usd("voyage-typo", 10)
 
 
 def test_worst_case_counts_full_max_tokens_and_generous_input() -> None:
