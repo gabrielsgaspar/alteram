@@ -1,0 +1,44 @@
+# Sources for the law library. See docs/milestones/M3.md 6.6.
+# Sections 75 and 75A of the Consumer Credit Act 1974 are left out on purpose (decision D4):
+# under hire purchase and conditional sale the finance company is itself the supplier.
+
+[cra-2015]
+kind = "legislation"
+base = "ukpga/2015/15"
+title = "Consumer Rights Act 2015"
+sections = ["3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18",
+            "19","20","21","22","23","24","25","26","27","28","29","30","31","32"]
+doc_type = "statute"
+authority_tier = "statute"
+licence = "OGL-3.0"
+attribution = "© Crown and database right. Derived from content available under the Open Government Licence v3.0 from legislation.gov.uk."
+
+[cra-2015.topics]          # by section number; set in config, not by a model
+"9" = ["satisfactory_quality"]
+"10" = ["fitness_for_purpose"]
+"11" = ["goods_matching_description"]
+"19" = ["consumer_remedies"]
+"20" = ["right_to_reject"]
+"22" = ["short_term_right_to_reject"]
+"23" = ["repair_or_replacement"]
+"24" = ["price_reduction", "final_right_to_reject"]
+
+[cca-1974]
+kind = "legislation"
+base = "ukpga/1974/39"
+title = "Consumer Credit Act 1974"
+sections = ["56","87","88","89","90","99","100","140A","140B","140C","173"]
+doc_type = "statute"
+authority_tier = "statute"
+licence = "OGL-3.0"
+attribution = "© Crown and database right. Derived from content available under the Open Government Licence v3.0 from legislation.gov.uk."
+
+[limitation-1980]
+kind = "legislation"
+base = "ukpga/1980/58"
+title = "Limitation Act 1980"
+sections = ["2","5","14A","32"]
+doc_type = "statute"
+authority_tier = "statute"
+licence = "OGL-3.0"
+attribution = "© Crown and database right. Derived from content available under the Open Government Licence v3.0 from legislation.gov.uk."
