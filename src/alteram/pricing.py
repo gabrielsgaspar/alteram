@@ -6,7 +6,7 @@ import threading
 from typing import NamedTuple
 
 PRICES_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
-PRICES_CHECKED = "2026-10-27"
+PRICES_CHECKED = "2026-11-01"
 
 RUN_BUDGET_ENV = "ALTERAM_RUN_BUDGET_USD"
 DEFAULT_RUN_BUDGET_USD = 5.0
@@ -26,6 +26,15 @@ class Price(NamedTuple):
 PRICES: dict[str, Price] = {
     "claude-opus-5-5": Price(4.0, 20.0),
     "claude-sonnet-5-5": Price(2.0, 10.0),
+    # The rate for prompts of up to 100,000 tokens.
+    "claude-haiku-5-5": Price(0.10, 0.50),
+}
+
+# Embedding prices, USD per million tokens.
+EMBEDDING_PRICES_URL = "https://docs.voyageai.com/docs/pricing"
+EMBEDDING_PRICES_CHECKED = "2026-11-01"
+EMBEDDING_PRICES: dict[str, float] = {
+    "voyage-4-large": 0.12,
 }
 
 
@@ -47,6 +56,17 @@ def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
     return (
         input_tokens * price.input_per_mtok + output_tokens * price.output_per_mtok
     ) / 1_000_000
+
+
+def embedding_cost_usd(model: str, tokens: int) -> float:
+    try:
+        per_mtok = EMBEDDING_PRICES[model]
+    except KeyError:
+        raise UnknownModel(
+            f"no price for embedding model {model!r}; "
+            "add it to EMBEDDING_PRICES in pricing.py"
+        ) from None
+    return tokens * per_mtok / 1_000_000
 
 
 def priced_model(reported: str, configured: str) -> str:
