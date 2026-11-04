@@ -88,6 +88,68 @@ review_marker = GUARD["review_marker"]
 changes_rounds = GUARD["changes_rounds"]
 must_fix_items = GUARD["must_fix_items"]
 
+UPLOAD_ARTIFACT = "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
+DOWNLOAD_ARTIFACT = "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333"
+# Names and sources of job outputs that would carry model-written text.
+# GitHub drops a job output that may contain a masked value, so such text
+# goes between jobs as an artifact instead (run 41933195429).
+MODEL_TEXT_NAMES = {
+    "comment",
+    "body",
+    "plan",
+    "report",
+    "review",
+    "must_fix",
+    "summary",
+}
+MODEL_TEXT_SOURCES = re.compile(
+    r"steps\.claude\.|structured_output|outputs\.(comment|body|plan|report|must_fix)\b"
+)
+
+
+def job_outputs(workflow: str) -> dict[str, dict[str, str]]:
+    """Each job's declared outputs, as {job: {name: value}}."""
+    found: dict[str, dict[str, str]] = {}
+    job, inside = None, False
+    for line in (WORKFLOWS / workflow).read_text(encoding="utf-8").splitlines():
+        if match := JOB.match(line):
+            job, inside = match.group(1), False
+        elif line == "    outputs:":
+            inside = True
+            found.setdefault(job, {})
+        elif inside and (match := re.match(r"^      ([a-z_]+): (.*)$", line)):
+            found[job][match.group(1)] = match.group(2)
+        elif inside and line.strip() and not line.startswith("      "):
+            inside = False
+    return found
+
+
+def test_job_outputs_are_found():
+    outputs = job_outputs("agent-review.yml")
+    assert {"verdict", "fixable", "reason"} <= set(outputs["review"])
+    assert "dispatch" in outputs["post"]
+
+
+@pytest.mark.parametrize(
+    "workflow", ["agent-plan.yml", "agent-build.yml", "agent-review.yml"]
+)
+def test_no_job_output_carries_model_text(workflow):
+    for job, outputs in job_outputs(workflow).items():
+        for name, value in outputs.items():
+            assert name not in MODEL_TEXT_NAMES, f"{workflow} {job}.{name}"
+            assert not MODEL_TEXT_SOURCES.search(value), f"{workflow} {job}.{name}"
+
+
+def test_review_comment_is_passed_as_a_pinned_artifact():
+    text = (WORKFLOWS / "agent-review.yml").read_text(encoding="utf-8")
+    uses = re.findall(r"uses: (actions/(?:upload|download)-artifact@\S+)", text)
+    assert uses == [UPLOAD_ARTIFACT, DOWNLOAD_ARTIFACT]
+    assert "needs.review.outputs.comment" not in text
+    assert "review-comment-${{ github.run_attempt }}" in text
+    assert "retention-days: 1" in text
+    assert "comment could not be passed to the post job" in text
+
+
 SHA_A = "a" * 40
 SHA_B = "b" * 40
 SHA_C = "c" * 40
@@ -435,7 +497,13 @@ def review_result(tmp_path, structured, scope=()):
         "JOB_TOKEN": "secret-job-value",
     }
     proc = run_block(REVIEW[("review", "result")], env, tmp_path)
-    return proc, outputs(out)
+    result = outputs(out)
+    # The comment reaches post as a file (an artifact), not a job output.
+    assert "comment" not in result
+    comment_file = tmp_path / "review-comment.md"
+    if comment_file.exists():
+        result["comment"] = comment_file.read_text(encoding="utf-8").removesuffix("\n")
+    return proc, result
 
 
 def entry(i, status, how="read the diff"):
