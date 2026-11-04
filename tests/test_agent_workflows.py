@@ -150,6 +150,20 @@ def test_review_comment_is_passed_as_a_pinned_artifact():
     assert "comment could not be passed to the post job" in text
 
 
+def test_post_job_never_references_the_claude_token():
+    lines = (WORKFLOWS / "agent-review.yml").read_text(encoding="utf-8").splitlines()
+    post: list[str] = []
+    inside = False
+    for line in lines:
+        if match := JOB.match(line):
+            inside = match.group(1) == "post"
+        if inside:
+            post.append(line)
+    assert post, "post job not found"
+    assert not any("secrets.CLAUDE_CODE_OAUTH_TOKEN" in line for line in post)
+    assert not any("CLAUDE_CODE_OAUTH_TOKEN" in line for line in post)
+
+
 SHA_A = "a" * 40
 SHA_B = "b" * 40
 SHA_C = "c" * 40

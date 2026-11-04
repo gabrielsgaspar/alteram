@@ -810,7 +810,6 @@ jobs:
           REVIEW_RESULT: ${{ needs.review.result }}
           VERDICT: ${{ needs.review.outputs.verdict }}
           FIXABLE: ${{ needs.review.outputs.fixable }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           REASON: ${{ needs.review.outputs.reason }}
           RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -826,18 +825,20 @@ jobs:
           if [ "${REVIEW_RESULT}" = success ] && { [ "${VERDICT}" = approve ] || [ "${VERDICT}" = changes ]; }; then
             if [ -s "${comment_file}" ]; then
               # The review job checked this already; check the downloaded file again.
-              for value in "${CLAUDE_CODE_OAUTH_TOKEN:-}" "${GH_TOKEN:-}"; do
-                if [ -n "${value}" ] && grep -qF -- "${value}" "${comment_file}"; then
-                  echo "::error::The review comment contains a secret value. Not posting it."
-                  exit 1
-                fi
-              done
-              if grep -qE 'sk-ant-|lsv2_|gh[pousr]_|github_pat_|-----BEGIN' "${comment_file}"; then
-                echo "::error::The review comment contains something that looks like a token. Not posting it."
-                exit 1
+              leaked=no
+              if [ -n "${GH_TOKEN:-}" ] && grep -qF -- "${GH_TOKEN}" "${comment_file}"; then
+                leaked=yes
               fi
-              cp "${comment_file}" review.md
-              kind="${VERDICT}"
+              if grep -qE 'sk-ant-|lsv2_|gh[pousr]_|github_pat_|-----BEGIN' "${comment_file}"; then
+                leaked=yes
+              fi
+              if [ "${leaked}" = yes ]; then
+                echo "::error::The review comment looked like it contained a token. Not posting it."
+                reason="The review comment looked like it contained a token, so it is not shown."
+              else
+                cp "${comment_file}" review.md
+                kind="${VERDICT}"
+              fi
             else
               reason="The review finished but its comment could not be passed to the post job. See the run: ${RUN_URL}"
             fi
