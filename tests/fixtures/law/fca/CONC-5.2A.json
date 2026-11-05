@@ -1,0 +1,16 @@
+{
+  "dates_shown": {
+    "as_of": "05/11/2026",
+    "last_updated": "04/11/2024"
+  },
+  "files": {
+    "CONC-5.2A.html": "2171aa09c04a3dff1bce77fc08b6be88d1a69ad21b398e2331d70bd52a587b04"
+  },
+  "final_url": "https://handbook.fca.org.uk/handbook/conc5/conc5s6",
+  "first_header": "CONC 5.2A.1 01/11/2018 R",
+  "saved_at": "2026-11-05T20:26:10Z",
+  "saved_by": "scripts/fca_save.py (headless Chromium via Playwright)",
+  "seconds_to_rules": 1.5,
+  "title": "FCA Handbook - CONC 5.2A Creditworthiness assessment",
+  "url": "https://handbook.fca.org.uk/handbook/conc5/conc5s6"
+}

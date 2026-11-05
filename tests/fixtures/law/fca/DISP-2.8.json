@@ -1,0 +1,16 @@
+{
+  "dates_shown": {
+    "as_of": "05/11/2026",
+    "last_updated": "13/01/2018"
+  },
+  "files": {
+    "DISP-2.8.html": "5831f3dd727c0c1a7201ebd38e088023e29508bb075c2233eb9cba6d39ceadf5"
+  },
+  "final_url": "https://handbook.fca.org.uk/handbook/disp2/disp2s8",
+  "first_header": "DISP 2.8.1 13/01/2018 R",
+  "saved_at": "2026-11-05T19:16:26Z",
+  "saved_by": "scripts/fca_save.py (headless Chromium via Playwright)",
+  "seconds_to_rules": 1.0,
+  "title": "FCA Handbook - DISP 2.8 Was the complaint referred to the Financial Ombudsman Service in time?",
+  "url": "https://handbook.fca.org.uk/handbook/disp2/disp2s8"
+}
