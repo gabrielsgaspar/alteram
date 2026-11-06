@@ -276,3 +276,9 @@ class EvalSummary(BaseModel):
     warnings: list[str]
     overall: OverallStats
     cases: list[CaseStats]
+
+
+class ContextualHeader(BaseModel):
+    """What the contextual header writer returns for one chunk."""
+
+    header: str
