@@ -1,0 +1,29 @@
+# Local Postgres 18 with pgvector (docs/milestones/M3.md 4.1, step 10).
+# No password: trust auth, and the port is bound to localhost only.
+# A fixed project name, so every worktree shares one database and volume.
+name: alteram
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.7-pg18-trixie
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_USER: alteram
+      POSTGRES_DB: alteram
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      # PG 18 images keep PGDATA at /var/lib/postgresql/18/docker.
+      - pgdata:/var/lib/postgresql
+      # Runs only when the volume is empty (first start).
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # Over TCP, so it only passes once the init scripts are done and the
+      # real server is listening.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "alteram", "-d", "alteram"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:

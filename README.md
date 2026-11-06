@@ -38,6 +38,18 @@ In `.env`, fill in:
 
 Tests never call a model, so `uv run pytest` passes before you add a key.
 
+### Database
+
+The law library uses Postgres 18 with pgvector, run by Docker Compose. It listens on `127.0.0.1:5432` only and has no password. On first start it also creates `alteram_test` for tests.
+
+```bash
+docker compose up -d db
+ALTERAM_DATABASE_URL=postgresql://alteram@localhost:5432/alteram uv run alembic upgrade head
+ALTERAM_TEST_DATABASE_URL=postgresql://alteram@localhost:5432/alteram_test uv run pytest -m db
+```
+
+Tests marked `db` are skipped when `ALTERAM_TEST_DATABASE_URL` is unset. They migrate and empty `alteram_test` themselves, and refuse any database whose name doesn't end in `_test`. CI sets `ALTERAM_REQUIRE_DB=1`, so there they fail instead of skipping. `docker compose down -v` deletes the data.
+
 ## Use
 
 ### Run a case
