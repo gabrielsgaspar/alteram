@@ -19,6 +19,10 @@ DIM = 1024
 MODEL = "test-model"
 AS_OF = date(2024, 1, 1)
 
+# SearchHit.backend per store backend (M3.md 6.4): Postgres labels hits by engine.
+VECTOR_BACKEND = {"memory": "memory", "postgres": "pgvector"}
+KEYWORD_BACKEND = {"memory": "memory", "postgres": "postgres_fts"}
+
 
 def vec(*values: float) -> list[float]:
     """A vector padded with zeros to the dimension Postgres will use."""
@@ -151,7 +155,7 @@ def test_vector_search_orders_by_similarity(store: LawStore) -> None:
     store.upsert([near, far], {near.id: vec(1, 0.1), far.id: vec(0, 1)}, MODEL)
     hits = store.search_vector(vec(1), AS_OF, 5)
     assert hit_ids(hits) == [near.id, far.id]
-    assert {h.backend for h in hits} == {store.backend}
+    assert {h.backend for h in hits} == {VECTOR_BACKEND[store.backend]}
     assert hits[0].score > hits[1].score
 
 
@@ -172,6 +176,7 @@ def test_keyword_search_ranks_better_match_first(store: LawStore) -> None:
     store.upsert([one, both], {}, None)
     hits = store.search_keyword("satisfactory goods", AS_OF, 5)
     assert hit_ids(hits) == [both.id, one.id]
+    assert {h.backend for h in hits} == {KEYWORD_BACKEND[store.backend]}
 
 
 def test_keyword_search_uses_contextual_text_when_present(store: LawStore) -> None:
