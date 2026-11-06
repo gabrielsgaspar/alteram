@@ -12,6 +12,7 @@ from alteram.law.models import (
     chunk_sha256,
     library_id,
 )
+from alteram.law.pg_store import PostgresStore
 from alteram.law.store import STOP_WORDS, LawStore, cosine, normalise_query
 
 DIM = 1024
@@ -53,10 +54,12 @@ def make_chunk(section: str = "9", **overrides: Any) -> LawChunk:
     return LawChunk(**values)
 
 
-@pytest.fixture(params=["memory"])
+@pytest.fixture(params=["memory", pytest.param("postgres", marks=pytest.mark.db)])
 def store(request: pytest.FixtureRequest) -> LawStore:
     if request.param == "memory":
         return MemoryStore()
+    if request.param == "postgres":
+        return PostgresStore(request.getfixturevalue("pg_conn"))
     raise AssertionError(request.param)
 
 
