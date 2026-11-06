@@ -9,7 +9,7 @@ Shared rules for all of them, stated once here and repeated briefly in each issu
 - No new dependencies. `pyproject.toml`, `uv.lock`, `.env.example`, `.github/`, `.claude/`, `prompts/` and `cases/` are out of scope unless an issue names them.
 - Type hints everywhere; small functions; every function with logic gets a test.
 
-Issue 19 is completed in step 18 once the FCA file format is known.
+Issue 19 was completed in step 18 (2026-11-05) from the saved FCA pages.
 
 ---
 
@@ -541,37 +541,60 @@ Let Gabriel look inside the law library from the terminal (the M3 stand-in for t
 
 **Title:** `Task: M3-19 FCA Handbook parser and build integration`
 
-**Needs:** 13, 18. **Step 18 must finish this issue first:** replace every line marked `[18]` with the facts it established, and delete this note.
+**Needs:** 13, 18.
 
 ```markdown
 ## Goal
 
-Add FCA Handbook rules (CONC and DISP) to the law library from files saved by hand, never fetched by a script, so the same build, header and load steps handle them. Conventions: docs/milestones/M3.md sections 3.2, 4.3 and 6.2 (FCA IDs).
+Add FCA Handbook rules (CONC and DISP) to the law library from section pages saved by `scripts/fca_save.py`, so the same build, header and load steps handle them. The script is run by a person, outside the pipeline, under the FCA's written consent (docs/SETUP_LOG.md, 2026-11-04); the build itself never fetches. Conventions: docs/milestones/M3.md sections 3.2, 4.3 and 6.2 (FCA IDs).
 
 ## In scope
 
-- `src/alteram/law/fca.py`: new. `parse_fca_file(data: bytes, source: str) -> list[Provision]`:
-  - [18] File format and the elements or text patterns that mark a rule, its number and status letter (R, G, E, D), and its text.
-  - One provision per rule or guidance paragraph, `uri_path` `fca/<SOURCEBOOK>/<rule>` (e.g. `fca/DISP/2.8.2R`); heading path: sourcebook title > chapter > section > rule number.
-  - `in_force_from`: [18] where the in-force or "as at" date appears in the saved file. `in_force_to` None.
-  - `authority_tier` on each `Provision`: `regulation` for R and E, `guidance` for G (the chunker already prefers a provision's tier over the source's).
-- `src/alteram/law/build.py`: for sources with `kind = "fca"`, read files from `law/raw/<source>/` listed in a hand-written `manifest.txt` (file name and sha256 per line) and use `parse_fca_file`; legislation sources unchanged.
-- `law/sources.toml`: add `fca-conc` (CONC 1, 5, 6, 7) and `fca-disp` (DISP 1, 2, 3), as decided under D3 ([18] how chapters are named in the saved files), `doc_type = "regulation"`, licence and attribution as decided in step 18.
-- `tests/test_fca.py`: new, on `tests/fixtures/law/fca/`. `tests/test_law_build.py`: add an FCA build test.
+- `src/alteram/law/fca.py`: new. `parse_fca_file(data: bytes, source: str) -> list[Provision]`, reading the rendered HTML of one section page with the standard library's `html.parser` (no new dependency). In the saved files (`tests/fixtures/law/fca/*.html`):
+  - The page is an Angular app's rendered DOM. Use element names and the stable class names below. Never use the generated `_ngcontent-…`/`_nghost-…` attributes, which change with each site release.
+  - Section: `div.section-container`, whose `h2 > span` holds the section number and title (`DISP 2.8 Was the complaint referred to the Financial Ombudsman Service in time?`, `CONC 5.2A Creditworthiness assessment`). Sub-headings inside it: `div.subsection-container > div.provision > h3 > span` (`General time limits`), each followed by its provision cards.
+  - Provision: one `p-card.custom_card` element per rule or guidance paragraph (its `id`, e.g. `p33200`, is the site's provision ID). Its header `div.header` holds, in order: `label > span` with the rule number (`DISP 2.8.2`, `CONC 7.3.5G`), a `span` with the provision's date (`30/06/2016`), and `span.provison-type` (the site's spelling) with the status letter. The fixtures have only `R` and `G` (CONC 5.2A: 20 R, 17 G). The chapter download that would have shown which other letters occur was refused (HTTP 429, docs/SETUP_LOG.md, 2026-11-04), so accept `R`, `G`, `E` and `D`, and raise an error naming the file and the rule number for any other value, so step 20's build shows it instead of guessing a tier.
+  - Rule numbers match `^(?P<book>[A-Z]+) (?P<num>\d+[A-Z]?\.\d+[A-Z]?\.\d+[A-Z]*)$` (`DISP 2.8.2`, `DISP 2.8.2A`, `CONC 5.2A.4`, `CONC 7.3.5G`, `CONC 7.3.10A`). The rule ID is the number followed by the status letter (`2.8.2` + `R` gives `2.8.2R`; `7.3.5G` + `R` gives `7.3.5GR`). Never read the letter off the end of the number: flat text runs them together (`CONC 7.3.5G04/11/2024R`), and number suffixes overlap with status letters.
+  - Text: `div.provision-meta div.section-content`, whose child `div.rule` or `div.guidance` holds `p`, `ol` and `li.subpara1`/`li.subpara2` (whose text starts with `(1)` or `(a)`), and `[Note: …]` paragraphs. Keep the text of glossary links (`a.autodeftext`) and cross-references (`span.xref a`) as plain text. Ignore the empty `p-overlay` and `p-dialog` placeholders. Deleted provisions: the page loads its provisions with `IsDeleted=false` (a "Deleted" filter, off by default, would show them), so saved pages hold no deleted cards. A deleted sub-paragraph stays in its card as the text `[deleted]` (DISP 2.8.5R(1)); keep it as it appears.
+  - One provision per card, `uri_path` `fca/<SOURCEBOOK>/<rule>` (e.g. `fca/DISP/2.8.2R`, `fca/CONC/5.2A.4R`); `number` the rule ID; heading path: sourcebook title > chapter (`DISP 2`) > section (`DISP 2.8 Was the complaint …`) > sub-heading (if any) > rule ID.
+  - `in_force_from`: the date in the provision's header, DD/MM/YYYY (DISP 2.8.2R: `30/06/2016`, so `2016-06-30`). `in_force_to` None, `status` `in_force`, `extent` None. The page-level "You are viewing … as of DD/MM/YYYY. … was last updated on DD/MM/YYYY." banner (a `div` with an `i.pi-calendar` icon) is the view date and the section's last change, not a provision's date; the sidecar records both as `dates_shown`.
+  - `authority_tier` on each `Provision`: `regulation` for R, E and D, `guidance` for G (the chunker already prefers a provision's tier over the source's).
+- `src/alteram/law/build.py`: for sources with `kind = "fca"`, read `law/raw/<source>/*.json` sidecars written by `scripts/fca_save.py` (ignore `report.json`), check each listed `.html` file's sha256 against the sidecar, and parse it with `parse_fca_file`. A mismatch or a missing file is an error naming the file. Use the sidecar's `url` as `source_url`. Process files sorted by name. Legislation sources unchanged.
+- `law/sources.toml`: add, as decided under D3 and in docs/SETUP_LOG.md (2026-11-04):
+  ```toml
+  [fca-conc]
+  kind = "fca"
+  title = "FCA Handbook: Consumer Credit sourcebook (CONC)"
+  chapters = ["conc1", "conc5", "conc6", "conc7"]   # paths for scripts/fca_save.py
+  doc_type = "regulation"
+  authority_tier = "regulation"
+  licence = "OGL-3.0"
+  attribution = "Contains public sector information licensed under the Open Government Licence v3.0. Source: FCA Handbook, Financial Conduct Authority (handbook.fca.org.uk)."
+
+  [fca-disp]
+  kind = "fca"
+  title = "FCA Handbook: Dispute Resolution: Complaints sourcebook (DISP)"
+  chapters = ["disp1", "disp2", "disp3"]
+  # doc_type, authority_tier, licence, attribution as above
+  ```
+  `chapters` lists Handbook chapter paths. Section slugs are the site's own IDs, not section numbers (`conc5/conc5s6` is CONC 5.2A; `disp1/disp1s9` is DISP 1.8), so files are named from the section number the page shows (`CONC-5.2A.html`, `DISP-1-Annex-3.html`). Never derive a section number from a slug. Step 20 gets whole chapters with `uv run --with playwright python scripts/fca_save.py law/raw/fca-conc conc1 conc5 conc6 conc7 --delay 15` (and `law/raw/fca-disp disp1 disp2 disp3`): the script finds each chapter's live sections, skips sections already saved completely (sidecar present, files matching their sha256) without a request, and lists the sections still missing per chapter in `law/raw/<source>/report.json`.
+- `tests/test_fca.py`: new, on `tests/fixtures/law/fca/`. `tests/test_law_build.py`: add an FCA build test that copies the fixture `.html` and `.json` files into a temporary `law/raw/fca-test/`.
 
 ## Out of scope
 
-- Any code that downloads from fca.org.uk or handbook.fca.org.uk.
-- The fixture files (step 18 committed them).
-- `pyproject.toml`, `uv.lock` (if step 18 added a parser dependency, it is already there).
+- Any code that downloads from fca.org.uk or handbook.fca.org.uk, including changes to `scripts/fca_save.py`.
+- The fixture files (step 18 committed them) and `law/raw/` (gitignored; step 18's download was refused with HTTP 429 before any chapter section was saved, so step 20 fetches them all, as listed under `missing` in each `report.json`).
+- `pyproject.toml`, `uv.lock` (no parser dependency is needed).
 
 ## Done when
 
-1. DISP 2.8.2R in the fixture parses to a provision with ID prefix `fca/DISP/2.8.2R/`, its full rule text (checked against a string in the test), and the fixture's date.
-2. Guidance paragraphs get `authority_tier = "guidance"` and rules `regulation` (tested).
-3. No provision text contains navigation, footer, or "print" text from the saved page (a test checks for a few known strings, [18]).
-4. Building an FCA source twice gives byte-identical JSONL, and legislation build tests pass unchanged.
-5. No module under `src/alteram/law/` imports `httpx` for FCA paths (a test greps `fca.py`).
-6. `git diff --stat main` lists only the files in scope.
-7. `uv run ruff check .`, `uv run ruff format --check .` and `uv run pytest` pass, with more tests collected than on `main`.
+1. `DISP-2.8.html` parses to a provision with ID prefix `fca/DISP/2.8.2R/`, `in_force_from` 2016-06-30, status letter R, and its full rule text (a test checks that it starts "The Ombudsman cannot consider a complaint if the complainant refers it to the Financial Ombudsman Service:" and contains "(a) six years after the event complained of; or (if later)").
+2. Status letters come from `span.provison-type`, not from the rule number: in `CONC-7.3.html`, CONC 7.3.5G is ID `fca/CONC/7.3.5GR/2024-11-04` with `authority_tier = "regulation"`; CONC 7.3.5 is `fca/CONC/7.3.5G/2024-11-04` with `authority_tier = "guidance"`; and CONC 7.3.4R is `regulation` (tested).
+3. `CONC-5.2A.html` (a lettered section) parses with every ID under `fca/CONC/5.2A.`, a heading path containing `CONC 5.2A Creditworthiness assessment`, and both R and G provisions (tested).
+4. Provision counts per fixture match the cards in the file: DISP 2.8 has 12 (7 R, 5 G), CONC 7.3 has 38 (13 R, 25 G), CONC 5.2A has 37 (20 R, 17 G) (tested).
+5. No provision text contains page chrome. A test checks every provision of every fixture against strings that are in the fixtures' HTML: "Skip to Main Content", "View Section as PDF", "Select Timeline", "Track Changes", "You are viewing", "Related resources", "Previous", "Copyright © 2026 FCA. All rights reserved.", "Designed and Maintained by FinregE Limited", "Back to top", "Add to favorite".
+6. Building an FCA source twice gives byte-identical JSONL, a sidecar whose sha256 does not match its HTML file fails the build with the file's name, and legislation build tests pass unchanged.
+7. No module under `src/alteram/law/` imports `httpx` or `playwright` for FCA paths (a test greps `fca.py`).
+8. `git diff --stat main` lists only the files in scope.
+9. `uv run ruff check .`, `uv run ruff format --check .` and `uv run pytest` pass, with more tests collected than on `main`.
 ```
